@@ -81,16 +81,52 @@ class DropCoverLabel(QLabel):
 
 
 # =============================================================================
+# Telegram Asyncio Bridge (Dedicated Background Loop for Telethon)
+# =============================================================================
+class TelegramBridge:
+    """
+    Dedicated background daemon thread running an asyncio event loop for Telethon.
+    Keeps the TelegramClient instance attached to a single permanent event loop,
+    completely preventing 'The asyncio event loop must not change after connection' errors.
+    """
+    def __init__(self, config: Config):
+        self.config = config
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run_loop, daemon=True, name="TelethonBridgeThread")
+        self.thread.start()
+
+        # Initialize PodcastDownloader directly on this persistent event loop
+        fut = asyncio.run_coroutine_threadsafe(self._init_downloader(), self.loop)
+        self.downloader: PodcastDownloader = fut.result()
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    async def _init_downloader(self) -> PodcastDownloader:
+        return PodcastDownloader(self.config, loop=self.loop)
+
+    def run_coro(self, coro):
+        """Runs a coroutine on the Telethon event loop and blocks calling thread until result."""
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return future.result()
+
+    def submit_coro(self, coro):
+        """Submits a coroutine to the Telethon event loop without blocking."""
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+
+# =============================================================================
 # Telegram In-App Login Dialog (QR Code + Phone Number + 2FA)
 # =============================================================================
 class TelegramLoginDialog(QDialog):
     loginSuccessful = pyqtSignal(str)
 
-    def __init__(self, config: Config, parent=None):
+    def __init__(self, bridge: TelegramBridge, parent=None):
         super().__init__(parent)
-        self.cfg = config
-        self.downloader = PodcastDownloader(self.cfg)
-        self.loop = asyncio.new_event_loop()
+        self.bridge = bridge
+        self.cfg = bridge.config
+        self.downloader = bridge.downloader
         self.phone_code_hash = None
         self.is_qr_active = False
 
@@ -187,12 +223,11 @@ class TelegramLoginDialog(QDialog):
         threading.Thread(target=self._qr_worker, daemon=True).start()
 
     def _qr_worker(self):
-        asyncio.set_event_loop(self.loop)
         try:
-            if not self.downloader.client.is_connected():
-                self.loop.run_until_complete(self.downloader.client.connect())
+            if not self.bridge.run_coro(self.downloader.client.is_connected()):
+                self.bridge.run_coro(self.downloader.client.connect())
 
-            qr_login = self.loop.run_until_complete(self.downloader.client.qr_login())
+            qr_login = self.bridge.run_coro(self.downloader.client.qr_login())
             
             # Generate QPixmap from QR
             qr = qrcode.QRCode(box_size=6, border=2)
@@ -205,8 +240,8 @@ class TelegramLoginDialog(QDialog):
             QTimer.singleShot(0, lambda: self._show_qr(pix))
 
             # Wait for scan
-            self.loop.run_until_complete(qr_login.wait(timeout=90))
-            me = self.loop.run_until_complete(self.downloader.client.get_me())
+            self.bridge.run_coro(qr_login.wait(timeout=90))
+            me = self.bridge.run_coro(self.downloader.client.get_me())
             user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
             QTimer.singleShot(0, lambda: self._on_login_success(user_name))
 
@@ -232,11 +267,10 @@ class TelegramLoginDialog(QDialog):
         self.send_code_btn.setText("Sending...")
 
         def worker():
-            asyncio.set_event_loop(self.loop)
             try:
-                if not self.downloader.client.is_connected():
-                    self.loop.run_until_complete(self.downloader.client.connect())
-                res = self.loop.run_until_complete(self.downloader.client.send_code_request(phone))
+                if not self.bridge.run_coro(self.downloader.client.is_connected()):
+                    self.bridge.run_coro(self.downloader.client.connect())
+                res = self.bridge.run_coro(self.downloader.client.send_code_request(phone))
                 self.phone_code_hash = res.phone_code_hash
                 self.cfg.update(TG_PHONE=phone)
                 QTimer.singleShot(0, lambda: QMessageBox.information(self, "Code Sent", "Verification code sent to your Telegram app!"))
@@ -258,19 +292,18 @@ class TelegramLoginDialog(QDialog):
             return
 
         def worker():
-            asyncio.set_event_loop(self.loop)
             try:
                 try:
-                    self.loop.run_until_complete(
+                    self.bridge.run_coro(
                         self.downloader.client.sign_in(phone=phone, code=code, phone_code_hash=self.phone_code_hash)
                     )
                 except SessionPasswordNeededError:
                     if not pwd:
                         QTimer.singleShot(0, lambda: QMessageBox.warning(self, "2FA Password Required", "Your account has Two-Step Verification enabled. Please enter your password above."))
                         return
-                    self.loop.run_until_complete(self.downloader.client.sign_in(password=pwd))
+                    self.bridge.run_coro(self.downloader.client.sign_in(password=pwd))
 
-                me = self.loop.run_until_complete(self.downloader.client.get_me())
+                me = self.bridge.run_coro(self.downloader.client.get_me())
                 user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
                 QTimer.singleShot(0, lambda: self._on_login_success(user_name))
             except Exception as e:
@@ -303,8 +336,9 @@ class PodcastStudioGUI(QMainWindow):
         self.selected_lib_index = -1
         self.pending_new_cover_path: Optional[Path] = None
 
-        # Downloader State
-        self.downloader = PodcastDownloader(self.cfg)
+        # Downloader & Async Telethon Bridge
+        self.bridge = TelegramBridge(self.cfg)
+        self.downloader = self.bridge.downloader
         self.scanned_podcasts: List[Dict[str, Any]] = []
         self.series_groups: Dict[str, List[Dict[str, Any]]] = {}
         self.is_download_running = False
@@ -408,14 +442,12 @@ class PodcastStudioGUI(QMainWindow):
     # =========================================================================
     def check_auth_status_async(self):
         def worker():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             try:
-                if not self.downloader.client.is_connected():
-                    loop.run_until_complete(self.downloader.client.connect())
-                authorized = loop.run_until_complete(self.downloader.client.is_user_authorized())
+                if not self.bridge.run_coro(self.downloader.client.is_connected()):
+                    self.bridge.run_coro(self.downloader.client.connect())
+                authorized = self.bridge.run_coro(self.downloader.client.is_user_authorized())
                 if authorized:
-                    me = loop.run_until_complete(self.downloader.client.get_me())
+                    me = self.bridge.run_coro(self.downloader.client.get_me())
                     user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
                     self.user_display_name = user_name
                     QTimer.singleShot(0, lambda: self.account_status_label.setText(f"🟢 Connected as: {user_name}"))
@@ -425,13 +457,11 @@ class PodcastStudioGUI(QMainWindow):
                     QTimer.singleShot(0, lambda: self.account_status_label.setStyleSheet("color: #f38ba8; font-weight: bold; margin-right: 8px;"))
             except Exception as e:
                 QTimer.singleShot(0, lambda: self.account_status_label.setText(f"⚠️ Telegram: {e}"))
-            finally:
-                loop.close()
 
         threading.Thread(target=worker, daemon=True).start()
 
     def open_login_dialog(self):
-        dlg = TelegramLoginDialog(self.cfg, self)
+        dlg = TelegramLoginDialog(self.bridge, self)
         dlg.loginSuccessful.connect(self.on_login_dialog_success)
         dlg.exec()
 
@@ -786,6 +816,7 @@ class PodcastStudioGUI(QMainWindow):
     def start_channel_scan(self):
         target = self.dl_channel_input.text().strip() or self.cfg.target_channel
         self.cfg.update(TARGET_CHANNEL=target)
+        self.downloader.config.target_channel = target
 
         self.scan_btn.setEnabled(False)
         self.scan_status_badge.setText("⏳ Connecting & scanning...")
@@ -796,13 +827,11 @@ class PodcastStudioGUI(QMainWindow):
         self.dl_signals.scan_finished.connect(self.on_channel_scanned)
 
         def worker():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             try:
-                if not self.downloader.client.is_connected():
-                    loop.run_until_complete(self.downloader.connect())
-                loop.run_until_complete(self.downloader.resolve_channel())
-                podcasts = loop.run_until_complete(self.downloader.scan_podcasts())
+                if not self.bridge.run_coro(self.downloader.client.is_connected()):
+                    self.bridge.run_coro(self.downloader.connect())
+                self.bridge.run_coro(self.downloader.resolve_channel(target))
+                podcasts = self.bridge.run_coro(self.downloader.scan_podcasts())
 
                 # Group by hashtags / series
                 series_map: Dict[str, List[Dict[str, Any]]] = {}
@@ -818,8 +847,6 @@ class PodcastStudioGUI(QMainWindow):
             except Exception as e:
                 self.dl_signals.log.emit(f"❌ Scan failed: {e}")
                 self.dl_signals.scan_finished.emit([], {}, "")
-            finally:
-                loop.close()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -999,11 +1026,9 @@ class PodcastStudioGUI(QMainWindow):
         self.dl_signals.download_all_finished.connect(self.on_download_finished)
 
         def worker():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             try:
-                if not self.downloader.client.is_connected():
-                    loop.run_until_complete(self.downloader.connect())
+                if not self.bridge.run_coro(self.downloader.client.is_connected()):
+                    self.bridge.run_coro(self.downloader.connect())
 
                 for idx, ep_item in enumerate(selected_items, 1):
                     if self.cancel_download:
@@ -1023,15 +1048,26 @@ class PodcastStudioGUI(QMainWindow):
                         txt = f"{pct}% | {format_size(cur)}/{format_size(tot)} | {format_size(int(spd))}/s"
                         self.dl_signals.file_progress.emit(cur, tot, txt)
 
-                    loop.run_until_complete(self.downloader.download_episode(ep_item, series_dir, on_progress=prog))
+                    def is_cancelled():
+                        return self.cancel_download
+
+                    self.bridge.run_coro(
+                        self.downloader.download_episode(
+                            ep_item,
+                            series_dir,
+                            on_progress=prog,
+                            is_cancelled=is_cancelled
+                        )
+                    )
 
                 series_display_title = active_series if active_series and active_series != "ALL" else self.downloader.channel_title
                 build_channel_catalog(series_dir, channel_title=series_display_title)
                 self.dl_signals.download_all_finished.emit(True, f"Finished downloading episodes to '{series_dir.name}'!")
+            except asyncio.CancelledError:
+                self.dl_signals.log.emit("🛑 Download cancelled.")
+                self.dl_signals.download_all_finished.emit(False, "Download cancelled by user.")
             except Exception as e:
                 self.dl_signals.download_all_finished.emit(False, str(e))
-            finally:
-                loop.close()
 
         threading.Thread(target=worker, daemon=True).start()
 

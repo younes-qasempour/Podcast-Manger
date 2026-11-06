@@ -50,7 +50,7 @@ def render_progress_bar(current: int, total: int, start_time: float, prefix: str
 
 
 class PodcastDownloader:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, loop: Optional[asyncio.AbstractEventLoop] = None):
         self.config = config
         proxy = self.config.proxy_tuple
         
@@ -64,7 +64,8 @@ class PodcastDownloader:
             system_version="Windows 11",
             app_version="5.0.0",
             lang_code="en",
-            system_lang_code="en"
+            system_lang_code="en",
+            loop=loop
         )
         self.channel_entity = None
         self.channel_title = ""
@@ -147,6 +148,7 @@ class PodcastDownloader:
         if not target:
             raise ValueError("Target channel is not specified in settings or input.")
 
+        self.config.target_channel = target
         # Clean target if it's a URL (e.g. https://t.me/agrafoss)
         cleaned_target = target.strip()
         if "t.me/" in cleaned_target:
@@ -264,7 +266,8 @@ class PodcastDownloader:
         self,
         podcast_item: Dict[str, Any],
         channel_base_dir: Path,
-        on_progress: Optional[Callable[[int, int], None]] = None
+        on_progress: Optional[Callable[[int, int], None]] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None
     ) -> Path:
         """
         Downloads the audio, extracts cover/thumbnail, saves info.md & info.json,
@@ -312,6 +315,8 @@ class PodcastDownloader:
                 start_time = time.time()
                 
                 def prog(cur, tot):
+                    if is_cancelled and is_cancelled():
+                        raise asyncio.CancelledError("Download cancelled by user")
                     if on_progress:
                         on_progress(cur, tot)
                     else:
