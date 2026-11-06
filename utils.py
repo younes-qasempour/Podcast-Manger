@@ -118,26 +118,12 @@ def extract_hashtags(text: str) -> List[str]:
 
 
 def clean_for_terminal(text: str, max_length: int = 60) -> str:
-    """
-    Shapes and bidirectionally orders Persian/Arabic text
-    so it renders cleanly in LTR terminals (VS Code / PowerShell).
-    """
+    """Cleans text for terminal display without reversing characters."""
     if not text:
         return ""
-    
     clean = text.replace('\n', ' ').strip()
     if len(clean) > max_length:
         clean = clean[:max_length] + "..."
-
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        if any('\u0600' <= ch <= '\u06FF' for ch in clean):
-            reshaped = arabic_reshaper.reshape(clean)
-            return get_display(reshaped)
-    except Exception:
-        pass
-
     return clean
 
 
