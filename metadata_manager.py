@@ -68,6 +68,14 @@ class EpisodeMetadata:
         return f"{prefix} - {safe_title}"
 
     @property
+    def duration_formatted(self) -> str:
+        return format_duration(self.duration)
+
+    @property
+    def file_size_formatted(self) -> str:
+        return format_size(self.file_size)
+
+    @property
     def message_url(self) -> Optional[str]:
         if self.channel_username:
             username = self.channel_username.lstrip("@")
