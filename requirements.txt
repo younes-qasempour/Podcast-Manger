@@ -1,0 +1,13 @@
+# Telegram MTProto Client & Fast Cryptography
+Telethon>=1.36.0
+cryptg>=0.4.0
+
+# Audio ID3 Tagging & Metadata Embedding
+mutagen>=1.47.0
+
+# Image & Thumbnail Processing
+pillow>=10.0.0
+
+# Proxy Support (for SOCKS5 / HTTP proxies)
+PySocks>=1.7.1
+python-socks>=2.0.0

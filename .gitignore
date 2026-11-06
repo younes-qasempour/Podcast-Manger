@@ -1,0 +1,23 @@
+# Sensitive Telegram Credentials & Sessions
+.env
+*.session
+*.session-journal
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# IDE & OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Audio files (kept locally to avoid GitHub 100MB per-file upload limit)
+*.mp3
+*.m4a
+*.ogg
+*.wav
+*.flac
