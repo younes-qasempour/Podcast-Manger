@@ -106,8 +106,20 @@ class TelegramBridge:
     async def _init_downloader(self) -> PodcastDownloader:
         return PodcastDownloader(self.config, loop=self.loop)
 
+    def is_connected(self) -> bool:
+        """Synchronously returns whether Telethon is currently connected."""
+        return bool(self.downloader and self.downloader.client and self.downloader.client.is_connected())
+
+    def ensure_connected(self):
+        """Ensures the Telegram client is connected."""
+        if not self.is_connected():
+            self.run_coro(self.downloader.client.connect())
+
     def run_coro(self, coro):
         """Runs a coroutine on the Telethon event loop and blocks calling thread until result."""
+        import inspect
+        if not inspect.iscoroutine(coro):
+            return coro
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         return future.result()
 
@@ -224,9 +236,7 @@ class TelegramLoginDialog(QDialog):
 
     def _qr_worker(self):
         try:
-            if not self.bridge.run_coro(self.downloader.client.is_connected()):
-                self.bridge.run_coro(self.downloader.client.connect())
-
+            self.bridge.ensure_connected()
             qr_login = self.bridge.run_coro(self.downloader.client.qr_login())
             
             # Generate QPixmap from QR
@@ -268,8 +278,7 @@ class TelegramLoginDialog(QDialog):
 
         def worker():
             try:
-                if not self.bridge.run_coro(self.downloader.client.is_connected()):
-                    self.bridge.run_coro(self.downloader.client.connect())
+                self.bridge.ensure_connected()
                 res = self.bridge.run_coro(self.downloader.client.send_code_request(phone))
                 self.phone_code_hash = res.phone_code_hash
                 self.cfg.update(TG_PHONE=phone)
@@ -443,8 +452,7 @@ class PodcastStudioGUI(QMainWindow):
     def check_auth_status_async(self):
         def worker():
             try:
-                if not self.bridge.run_coro(self.downloader.client.is_connected()):
-                    self.bridge.run_coro(self.downloader.client.connect())
+                self.bridge.ensure_connected()
                 authorized = self.bridge.run_coro(self.downloader.client.is_user_authorized())
                 if authorized:
                     me = self.bridge.run_coro(self.downloader.client.get_me())
@@ -828,8 +836,7 @@ class PodcastStudioGUI(QMainWindow):
 
         def worker():
             try:
-                if not self.bridge.run_coro(self.downloader.client.is_connected()):
-                    self.bridge.run_coro(self.downloader.connect())
+                self.bridge.ensure_connected()
                 self.bridge.run_coro(self.downloader.resolve_channel(target))
                 podcasts = self.bridge.run_coro(self.downloader.scan_podcasts())
 
@@ -1027,8 +1034,7 @@ class PodcastStudioGUI(QMainWindow):
 
         def worker():
             try:
-                if not self.bridge.run_coro(self.downloader.client.is_connected()):
-                    self.bridge.run_coro(self.downloader.connect())
+                self.bridge.ensure_connected()
 
                 for idx, ep_item in enumerate(selected_items, 1):
                     if self.cancel_download:
