@@ -10,7 +10,7 @@ from downloader import PodcastDownloader
 from export_organizer import TelegramExportOrganizer, find_recent_telegram_exports
 from git_manager import GitManager
 from metadata_manager import build_channel_catalog
-from utils import sanitize_filename, extract_episode_number, to_ascii_digits
+from utils import sanitize_filename, extract_episode_number, to_ascii_digits, extract_hashtags, clean_for_terminal
 
 
 def clear_screen():
@@ -124,11 +124,11 @@ def run_git_push(cfg: Config, commit_msg: Optional[str] = None):
     input("\nPress Enter to continue...")
 
 
-async def run_direct_telegram_download(cfg: Config):
-    """Direct login into Telegram, scans channel, lets user select episodes to download, and pushes to Git."""
+async def run_direct_telegram_download(cfg: Config, preselected_series: Optional[str] = None):
+    """Direct login into Telegram, scans channel, lets user filter by Series/Hashtag and download."""
     clear_screen()
     print_banner()
-    print("🚀 Direct Telegram Downloader")
+    print("🚀 Direct Telegram Downloader & Series Filter")
     print("------------------------------------------------------------------")
     print(f"Target Channel: {cfg.target_channel}")
     ch_choice = input(f"Press Enter to use '{cfg.target_channel}', or type a new channel username/link: ").strip()
@@ -147,55 +147,112 @@ async def run_direct_telegram_download(cfg: Config):
 
     print("\nScanning podcasts in channel...")
     try:
-        podcasts = await downloader.scan_podcasts()
+        all_podcasts = await downloader.scan_podcasts()
     except Exception as e:
         print(f"\n❌ Failed to scan channel: {e}")
         input("\nPress Enter to return...")
         return
 
-    if not podcasts:
+    if not all_podcasts:
         print("No audio podcasts found in this channel.")
         input("\nPress Enter to return...")
         return
 
-    print(f"\n🎧 Found {len(podcasts)} podcast episodes in '{downloader.channel_title}':\n")
-    # Show last 15 episodes preview
-    show_list = podcasts[-20:] if len(podcasts) > 20 else podcasts
-    start_idx = len(podcasts) - len(show_list) + 1
-    for i, item in enumerate(show_list, start=start_idx):
+    # Extract all series/hashtags
+    from collections import Counter
+    hashtag_counter = Counter()
+    for item in all_podcasts:
         m = item["metadata"]
-        ep_str = f"Ep #{m.episode_number:03d}" if m.episode_number is not None else "No Ep#"
-        print(f"  [{i:02d}] {ep_str} | {m.title[:55]} | {m.duration_formatted} | {m.file_size_formatted}")
+        tags = extract_hashtags(m.caption) + extract_hashtags(m.title)
+        for t in tags:
+            hashtag_counter[t] += 1
 
-    if len(podcasts) > 20:
-        print(f"  ... (and {len(podcasts) - 20} older episodes)")
+    # Filter by series
+    active_series = preselected_series
+    selected_series_podcasts = all_podcasts
 
-    print("\n" + "="*65)
-    print("Choose which episodes to download:")
-    print("  • Type 'all' to download all episodes")
+    if not active_series and hashtag_counter:
+        print("\n" + "="*70)
+        print("📚 Detected Podcast Series (#Hashtags):")
+        print("="*70)
+        top_tags = [tag for tag, count in hashtag_counter.most_common(12) if count >= 2]
+        for idx, tag in enumerate(top_tags, 1):
+            print(f"  [{idx:02d}] {tag:<30} ({hashtag_counter[tag]} episodes)")
+        print(f"  [A ] View All Episodes (mixed, {len(all_podcasts)} tracks)")
+        print("="*70)
+
+        series_choice = input("\nSelect series number [1-12], type hashtag (e.g. #چنین_گفت_زرتشت), or 'A': ").strip()
+        if series_choice.isdigit() and 1 <= int(series_choice) <= len(top_tags):
+            active_series = top_tags[int(series_choice) - 1]
+        elif series_choice.startswith("#"):
+            active_series = series_choice
+        elif series_choice and series_choice.lower() != "a":
+            # Search by keyword
+            keyword = series_choice.lstrip("#")
+            matches = [t for t in hashtag_counter if keyword in t]
+            if matches:
+                active_series = matches[0]
+
+    # Filter podcasts if series selected
+    if active_series:
+        tag_clean = active_series.lstrip("#")
+        selected_series_podcasts = [
+            p for p in all_podcasts
+            if tag_clean in p["metadata"].caption or tag_clean in p["metadata"].title
+        ]
+        # Sort chronologically / by episode number ascending (Ep 1 to 92)
+        def ep_sort(item):
+            ep = item["metadata"].episode_number
+            return (0, ep) if ep is not None else (1, item["message"].id)
+        selected_series_podcasts.sort(key=ep_sort)
+        print(f"\n🎯 Selected Series: {active_series} ({len(selected_series_podcasts)} episodes found)")
+    else:
+        print(f"\n🎧 Showing All {len(selected_series_podcasts)} episodes (mixed)")
+
+    # Display episodes list with clean formatting
+    print("\n" + "-"*75)
+    show_list = selected_series_podcasts
+    # Show first 10 and last 10 if list is long
+    if len(show_list) > 25:
+        preview_items = list(enumerate(show_list[:10], start=1)) + list(enumerate(show_list[-15:], start=len(show_list)-14))
+    else:
+        preview_items = list(enumerate(show_list, start=1))
+
+    last_idx = 0
+    for i, item in preview_items:
+        if i > last_idx + 1 and last_idx > 0:
+            print(f"  ... [skipped {i - last_idx - 1} middle episodes] ...")
+        last_idx = i
+        m = item["metadata"]
+        ep_num = m.episode_number
+        ep_label = f"Ep #{ep_num:03d}" if ep_num is not None else "No Ep#"
+        title_disp = clean_for_terminal(m.title, max_length=42)
+        print(f"  [{i:03d}] {ep_label} | {m.duration_formatted} | {m.file_size_formatted:>8} | {title_disp}")
+
+    print("-"*75)
+    print("Download options:")
+    print("  • Type 'all' to download ALL episodes in this series")
     print("  • Type 'latest 5' (or any number) for the most recent episodes")
     print("  • Type episode numbers, e.g.: 91, 92 or 90-95")
-    print("  • Type list index numbers, e.g.: 1, 2 or 1-5")
     print("  • Type '0' to cancel")
-    print("="*65)
+    print("-"*75)
 
     selection = input("\nYour selection: ").strip().lower()
     if not selection or selection == "0":
         return
 
-    selected_podcasts = []
-    clean_selection = to_ascii_digits(selection)
+    to_download = []
+    clean_sel = to_ascii_digits(selection)
 
-    if clean_selection == "all":
-        selected_podcasts = podcasts
-    elif clean_selection.startswith("latest"):
-        parts = clean_selection.split()
-        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 5
-        selected_podcasts = podcasts[-count:]
+    if clean_sel == "all":
+        to_download = selected_series_podcasts
+    elif clean_sel.startswith("latest"):
+        parts = clean_sel.split()
+        cnt = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 5
+        to_download = selected_series_podcasts[-cnt:]
     else:
-        # Check if numbers are episode numbers or indices
         target_nums = set()
-        for part in clean_selection.split(","):
+        for part in clean_sel.split(","):
             part = part.strip()
             if "-" in part:
                 try:
@@ -206,37 +263,40 @@ async def run_direct_telegram_download(cfg: Config):
             elif part.isdigit():
                 target_nums.add(int(part))
 
-        # First match by episode_number
-        matched_by_ep = [p for p in podcasts if p["metadata"].episode_number in target_nums]
-        if matched_by_ep:
-            selected_podcasts = matched_by_ep
+        # Match by episode number first
+        matched = [p for p in selected_series_podcasts if p["metadata"].episode_number in target_nums]
+        if matched:
+            to_download = matched
         else:
-            # Fallback to 1-based index
-            selected_podcasts = [p for idx, p in enumerate(podcasts, 1) if idx in target_nums]
+            # Fallback to index in current series
+            to_download = [p for idx, p in enumerate(selected_series_podcasts, 1) if idx in target_nums]
 
-    if not selected_podcasts:
+    if not to_download:
         print("No matching episodes found.")
         input("\nPress Enter to return...")
         return
 
-    print(f"\nSelected {len(selected_podcasts)} episode(s) to download.")
-    safe_ch_name = sanitize_filename(downloader.channel_title, max_length=60)
-    ch_dir = cfg.output_dir / safe_ch_name
-    ch_dir.mkdir(parents=True, exist_ok=True)
+    # Folder destination
+    series_folder_name = sanitize_filename(active_series.lstrip("#") if active_series else downloader.channel_title, max_length=50)
+    series_dir = cfg.output_dir / series_folder_name
+    series_dir.mkdir(parents=True, exist_ok=True)
 
-    for idx, item in enumerate(selected_podcasts, 1):
-        print(f"\n=================== [{idx}/{len(selected_podcasts)}] ===================")
-        await downloader.download_episode(item, ch_dir)
+    print(f"\n📥 Downloading {len(to_download)} episode(s) to: {series_dir.name}/")
+    for idx, item in enumerate(to_download, 1):
+        print(f"\n=================== [{idx}/{len(to_download)}] ===================")
+        await downloader.download_episode(item, series_dir)
 
-    # Update Catalog & RSS
-    print("\nUpdating Catalog & Podcast RSS Feed...")
-    readme_path = build_channel_catalog(ch_dir, channel_title=downloader.channel_title)
-    print(f"Catalog updated: {readme_path}")
+    # Build catalog & RSS for this series
+    series_display_title = active_series or downloader.channel_title
+    print(f"\nUpdating Catalog & RSS for '{series_display_title}'...")
+    readme_path = build_channel_catalog(series_dir, channel_title=series_display_title)
+    print(f"Catalog created: {readme_path}")
 
-    # Prompt Git Commit & Push
-    git_prompt = input("\n🚀 Do you want to commit & push these to GitHub now? [Y/n]: ").strip().lower()
+    # Prompt Git Push
+    git_prompt = input(f"\n🚀 Commit and push '{series_display_title}' to GitHub now? [Y/n]: ").strip().lower()
     if git_prompt in ("", "y", "yes"):
-        run_git_push(cfg, commit_msg=f"Add {len(selected_podcasts)} episodes from {downloader.channel_title}")
+        commit_msg = f"Add {len(to_download)} episodes of {series_display_title}"
+        run_git_push(cfg, commit_msg=commit_msg)
 
     input("\nPress Enter to return to menu...")
 
@@ -325,6 +385,7 @@ def main_menu():
 def parse_cli_args():
     parser = argparse.ArgumentParser(description="Telegram Podcast Downloader, Organizer and GitHub Archiver")
     parser.add_argument("--import-export", type=str, help="Path to Telegram Desktop export folder to organize")
+    parser.add_argument("--series", type=str, help="Filter downloads by podcast series or hashtag (e.g. '#چنین_گفت_زرتشت')")
     parser.add_argument("--download-all", action="store_true", help="Download all podcast episodes from target channel via API")
     parser.add_argument("--latest", type=int, help="Download latest N podcast episodes via API")
     parser.add_argument("--episodes", type=str, help="Comma-separated episode numbers (e.g. '91,92' or '90-95')")
@@ -340,7 +401,9 @@ if __name__ == "__main__":
     if args.channel:
         cfg.target_channel = args.channel
 
-    if args.import_export:
+    if args.series and not (args.download_all or args.latest or args.episodes):
+        asyncio.run(run_direct_telegram_download(cfg, preselected_series=args.series))
+    elif args.import_export:
         organizer = TelegramExportOrganizer(Path(args.import_export), cfg.output_dir)
         organizer.process()
         if args.push:

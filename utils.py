@@ -1,6 +1,6 @@
 import re
 import unicodedata
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 
 
 PERSIAN_ARABIC_DIGIT_MAP = str.maketrans({
@@ -106,6 +106,39 @@ def extract_series_title(caption: str, title: str = "") -> str:
             return first_line[:80]
 
     return "Podcast"
+
+
+def extract_hashtags(text: str) -> List[str]:
+    """Extracts all hashtags from text (e.g. #چنین_گفت_زرتشت)."""
+    if not text:
+        return []
+    # Match Persian and English hashtags
+    tags = re.findall(r'#([\w\u0600-\u06FF]+)', text)
+    return [f"#{t}" for t in tags]
+
+
+def clean_for_terminal(text: str, max_length: int = 60) -> str:
+    """
+    Shapes and bidirectionally orders Persian/Arabic text
+    so it renders cleanly in LTR terminals (VS Code / PowerShell).
+    """
+    if not text:
+        return ""
+    
+    clean = text.replace('\n', ' ').strip()
+    if len(clean) > max_length:
+        clean = clean[:max_length] + "..."
+
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        if any('\u0600' <= ch <= '\u06FF' for ch in clean):
+            reshaped = arabic_reshaper.reshape(clean)
+            return get_display(reshaped)
+    except Exception:
+        pass
+
+    return clean
 
 
 def format_size(size_bytes: int) -> str:

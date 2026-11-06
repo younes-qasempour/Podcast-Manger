@@ -56,6 +56,11 @@ class EpisodeMetadata:
         self.episode_number = episode_number if episode_number is not None else extract_episode_number(self.caption, self.title)
         self.series_title = extract_series_title(self.caption, self.title)
 
+        # Extract hashtags
+        import re
+        self.hashtags = [h.strip('#') for h in re.findall(r'#(\w+)', self.caption)]
+        self.main_hashtag = f"#{self.hashtags[0]}" if self.hashtags else ""
+
     @property
     def folder_name(self) -> str:
         """Returns safe folder name for this episode."""
@@ -96,8 +101,10 @@ class EpisodeMetadata:
             "duration_seconds": self.duration,
             "duration_formatted": format_duration(self.duration),
             "file_size_bytes": self.file_size,
-            "file_size_formatted": format_size(self.file_size),
+            "file_size_formatted": self.file_size_formatted,
             "audio_filename": self.audio_filename,
+            "hashtags": self.hashtags,
+            "main_hashtag": self.main_hashtag,
             "caption": self.caption
         }
 
