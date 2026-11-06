@@ -57,6 +57,10 @@ def save_env_file(data: Dict[str, Any], dotenv_path: Optional[Path] = None):
         f.writelines(new_lines)
 
 
+DEFAULT_API_ID = "2040"
+DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
+
+
 class Config:
     def __init__(self, root_dir: Optional[Path] = None):
         self.root_dir = root_dir or Path(__file__).resolve().parent
@@ -66,8 +70,8 @@ class Config:
     def reload(self):
         load_env_file(self.env_file)
         
-        self.api_id = os.getenv("TG_API_ID", "").strip()
-        self.api_hash = os.getenv("TG_API_HASH", "").strip()
+        self.api_id = os.getenv("TG_API_ID", "").strip() or DEFAULT_API_ID
+        self.api_hash = os.getenv("TG_API_HASH", "").strip() or DEFAULT_API_HASH
         self.phone = os.getenv("TG_PHONE", "").strip()
         self.session_name = os.getenv("TG_SESSION_NAME", "tg_podcast_session").strip()
         self.session_path = self.root_dir / self.session_name
@@ -100,7 +104,7 @@ class Config:
         return (self.proxy_type, self.proxy_host, self.proxy_port)
 
     def is_configured(self) -> bool:
-        """Returns True if minimum Telegram credentials are provided."""
+        """Returns True since built-in credentials are used if custom ones aren't provided."""
         return bool(self.api_id and self.api_hash)
 
     def update(self, **kwargs):

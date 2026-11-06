@@ -312,5 +312,59 @@ def build_channel_catalog(channel_dir: Path, channel_title: str = "Telegram Podc
     with open(readme_path, "w", encoding="utf-8") as f:
         f.write("\n".join(catalog_lines))
 
+    # Also generate RSS podcast feed
+    generate_podcast_rss(channel_dir, channel_title, episodes_data)
+
     return readme_path
+
+
+def generate_podcast_rss(channel_dir: Path, channel_title: str, episodes_data: List[Dict[str, Any]]) -> Path:
+    """Generates an iTunes/Podcasting-standard RSS feed (feed.xml) for podcast players."""
+    import html
+
+    def xml_esc(s: str) -> str:
+        return html.escape(str(s or ""), quote=True)
+
+    items_xml = []
+    for ep in episodes_data:
+        title = xml_esc(ep.get("title", "Episode"))
+        caption = xml_esc(ep.get("caption", ""))
+        duration = ep.get("duration_formatted", "00:00")
+        ep_num = ep.get("episode_number")
+        ep_tag = f"<itunes:episode>{ep_num}</itunes:episode>" if ep_num is not None else ""
+        date_str = ep.get("date") or datetime.now().isoformat()
+        
+        folder_name = ep.get("_folder_name", "")
+        audio_file = ep.get("audio_filename", "audio.mp3")
+        audio_rel_url = f"episodes/{xml_esc(folder_name)}/{xml_esc(audio_file)}"
+
+        items_xml.append(f"""    <item>
+      <title>{title}</title>
+      <description>{caption}</description>
+      <pubDate>{date_str}</pubDate>
+      <enclosure url="{audio_rel_url}" length="{ep.get('file_size_bytes', 0)}" type="audio/mpeg" />
+      <itunes:duration>{duration}</itunes:duration>
+      {ep_tag}
+      <itunes:author>{xml_esc(ep.get('artist', channel_title))}</itunes:author>
+    </item>""")
+
+    feed_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>{xml_esc(channel_title)}</title>
+    <description>Archived podcast series from Telegram</description>
+    <link>https://github.com</link>
+    <language>fa</language>
+    <itunes:author>{xml_esc(channel_title)}</itunes:author>
+    <itunes:summary>Archived podcast episodes and transcripts</itunes:summary>
+{chr(10).join(items_xml)}
+  </channel>
+</rss>
+"""
+
+    rss_path = channel_dir / "feed.xml"
+    with open(rss_path, "w", encoding="utf-8") as f:
+        f.write(feed_xml)
+
+    return rss_path
 

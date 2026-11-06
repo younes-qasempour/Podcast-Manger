@@ -7,7 +7,7 @@ from typing import Optional, List, Set
 
 from config import Config
 from downloader import PodcastDownloader
-from export_organizer import TelegramExportOrganizer
+from export_organizer import TelegramExportOrganizer, find_recent_telegram_exports
 from git_manager import GitManager
 from metadata_manager import build_channel_catalog
 from utils import sanitize_filename, extract_episode_number, to_ascii_digits
@@ -38,9 +38,16 @@ def run_export_import(cfg: Config):
     print("  4. Choose format: 'Machine-readable JSON' (or HTML).")
     print("  5. Click 'Export' and note the destination folder.\n")
 
-    folder_input = input("Enter path to Telegram export folder (or press Enter for './export'): ").strip().strip('"\'')
+    recent_exports = find_recent_telegram_exports()
+    default_prompt = "./export"
+    if recent_exports:
+        default_prompt = str(recent_exports[0])
+        print(f"✨ Found recent Telegram Export:")
+        print(f"   --> {default_prompt}\n")
+
+    folder_input = input(f"Enter path to Telegram export folder (Press Enter for default):\n[{default_prompt}]: ").strip().strip('"\'')
     if not folder_input:
-        folder_input = "./export"
+        folder_input = default_prompt
 
     export_path = Path(folder_input).resolve()
     if not export_path.exists():
@@ -117,84 +124,121 @@ def run_git_push(cfg: Config, commit_msg: Optional[str] = None):
     input("\nPress Enter to continue...")
 
 
-async def run_api_download_menu(cfg: Config):
-    """Sub-menu for downloading via Telegram API (Telethon)."""
-    if not cfg.is_configured():
-        print("\n⚠️ Telegram API credentials are missing!")
-        print("Telegram's website (my.telegram.org) often gives an error when generating new API keys.")
-        print("💡 TIP: Use Menu Option [1] ('Organize from Telegram Desktop Export') instead! It needs NO API keys.")
-        try_anyway = input("\nDo you still want to enter API ID & Hash? [y/N]: ").strip().lower()
-        if try_anyway not in ("y", "yes"):
-            return
-        api_id = input("Enter API_ID: ").strip()
-        api_hash = input("Enter API_HASH: ").strip()
-        if api_id and api_hash:
-            cfg.update(TG_API_ID=api_id, TG_API_HASH=api_hash)
+async def run_direct_telegram_download(cfg: Config):
+    """Direct login into Telegram, scans channel, lets user select episodes to download, and pushes to Git."""
+    clear_screen()
+    print_banner()
+    print("🚀 Direct Telegram Downloader")
+    print("------------------------------------------------------------------")
+    print(f"Target Channel: {cfg.target_channel}")
+    ch_choice = input(f"Press Enter to use '{cfg.target_channel}', or type a new channel username/link: ").strip()
+    if ch_choice:
+        cfg.update(TARGET_CHANNEL=ch_choice)
 
     downloader = PodcastDownloader(cfg)
     try:
+        print("\nConnecting to Telegram...")
         await downloader.connect()
         await downloader.resolve_channel()
     except Exception as e:
-        print(f"\n❌ Connection error: {e}")
+        print(f"\n❌ Connection failed: {e}")
         input("\nPress Enter to return...")
         return
 
-    print("\nSelect Download Mode:")
-    print("  [1] Download ALL episodes in channel")
-    print("  [2] Download Latest N episodes (e.g. last 5)")
-    print("  [3] Download Specific Episode Number(s) (e.g. 91, 92 or 90-95)")
-    print("  [4] Scan and List episodes only (dry run)")
-    print("  [0] Cancel")
+    print("\nScanning podcasts in channel...")
+    try:
+        podcasts = await downloader.scan_podcasts()
+    except Exception as e:
+        print(f"\n❌ Failed to scan channel: {e}")
+        input("\nPress Enter to return...")
+        return
 
-    mode = input("\nChoice [1-4]: ").strip()
-    if mode == "1":
-        await downloader.download_all()
-    elif mode == "2":
-        n_str = input("How many latest episodes to download? [e.g. 5]: ").strip()
-        try:
-            n = int(n_str)
-            podcasts = await downloader.scan_podcasts()
-            selected = podcasts[-n:] if len(podcasts) >= n else podcasts
-            channel_name = sanitize_filename(downloader.channel_title, max_length=60)
-            channel_dir = cfg.output_dir / channel_name
-            channel_dir.mkdir(parents=True, exist_ok=True)
-            for i, p in enumerate(selected, 1):
-                print(f"\n--- Episode [{i}/{len(selected)}] ---")
-                await downloader.download_episode(p, channel_dir)
-            build_channel_catalog(channel_dir, channel_title=downloader.channel_title)
-        except ValueError:
-            print("Invalid number.")
-    elif mode == "3":
-        ep_input = input("Enter episode numbers (e.g. 91, 92 or range 90-95): ").strip()
-        ep_numbers: Set[int] = set()
-        clean_input = to_ascii_digits(ep_input)
-        for part in clean_input.split(","):
+    if not podcasts:
+        print("No audio podcasts found in this channel.")
+        input("\nPress Enter to return...")
+        return
+
+    print(f"\n🎧 Found {len(podcasts)} podcast episodes in '{downloader.channel_title}':\n")
+    # Show last 15 episodes preview
+    show_list = podcasts[-20:] if len(podcasts) > 20 else podcasts
+    start_idx = len(podcasts) - len(show_list) + 1
+    for i, item in enumerate(show_list, start=start_idx):
+        m = item["metadata"]
+        ep_str = f"Ep #{m.episode_number:03d}" if m.episode_number is not None else "No Ep#"
+        print(f"  [{i:02d}] {ep_str} | {m.title[:55]} | {m.duration_formatted} | {m.file_size_formatted}")
+
+    if len(podcasts) > 20:
+        print(f"  ... (and {len(podcasts) - 20} older episodes)")
+
+    print("\n" + "="*65)
+    print("Choose which episodes to download:")
+    print("  • Type 'all' to download all episodes")
+    print("  • Type 'latest 5' (or any number) for the most recent episodes")
+    print("  • Type episode numbers, e.g.: 91, 92 or 90-95")
+    print("  • Type list index numbers, e.g.: 1, 2 or 1-5")
+    print("  • Type '0' to cancel")
+    print("="*65)
+
+    selection = input("\nYour selection: ").strip().lower()
+    if not selection or selection == "0":
+        return
+
+    selected_podcasts = []
+    clean_selection = to_ascii_digits(selection)
+
+    if clean_selection == "all":
+        selected_podcasts = podcasts
+    elif clean_selection.startswith("latest"):
+        parts = clean_selection.split()
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 5
+        selected_podcasts = podcasts[-count:]
+    else:
+        # Check if numbers are episode numbers or indices
+        target_nums = set()
+        for part in clean_selection.split(","):
             part = part.strip()
             if "-" in part:
                 try:
-                    start, end = part.split("-", 1)
-                    ep_numbers.update(range(int(start), int(end) + 1))
+                    s, e = part.split("-", 1)
+                    target_nums.update(range(int(s), int(e) + 1))
                 except ValueError:
                     pass
             elif part.isdigit():
-                ep_numbers.add(int(part))
+                target_nums.add(int(part))
 
-        if not ep_numbers:
-            print("No valid episode numbers found.")
-            return
+        # First match by episode_number
+        matched_by_ep = [p for p in podcasts if p["metadata"].episode_number in target_nums]
+        if matched_by_ep:
+            selected_podcasts = matched_by_ep
+        else:
+            # Fallback to 1-based index
+            selected_podcasts = [p for idx, p in enumerate(podcasts, 1) if idx in target_nums]
 
-        print(f"Targeting episodes: {sorted(ep_numbers)}")
-        await downloader.download_all(episodes_filter=lambda meta: meta.episode_number in ep_numbers)
-    elif mode == "4":
-        podcasts = await downloader.scan_podcasts()
-        print(f"\nFound {len(podcasts)} audio tracks:")
-        for item in podcasts:
-            m = item["metadata"]
-            ep = f"Ep #{m.episode_number:03d}" if m.episode_number is not None else "No Ep#"
-            print(f"  • {ep} | {m.title} | {m.file_size_formatted} | {m.duration_formatted}")
+    if not selected_podcasts:
+        print("No matching episodes found.")
+        input("\nPress Enter to return...")
+        return
 
-    input("\nPress Enter to return...")
+    print(f"\nSelected {len(selected_podcasts)} episode(s) to download.")
+    safe_ch_name = sanitize_filename(downloader.channel_title, max_length=60)
+    ch_dir = cfg.output_dir / safe_ch_name
+    ch_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, item in enumerate(selected_podcasts, 1):
+        print(f"\n=================== [{idx}/{len(selected_podcasts)}] ===================")
+        await downloader.download_episode(item, ch_dir)
+
+    # Update Catalog & RSS
+    print("\nUpdating Catalog & Podcast RSS Feed...")
+    readme_path = build_channel_catalog(ch_dir, channel_title=downloader.channel_title)
+    print(f"Catalog updated: {readme_path}")
+
+    # Prompt Git Commit & Push
+    git_prompt = input("\n🚀 Do you want to commit & push these to GitHub now? [Y/n]: ").strip().lower()
+    if git_prompt in ("", "y", "yes"):
+        run_git_push(cfg, commit_msg=f"Add {len(selected_podcasts)} episodes from {downloader.channel_title}")
+
+    input("\nPress Enter to return to menu...")
 
 
 def prompt_settings(cfg: Config):
@@ -248,18 +292,18 @@ def main_menu():
         clear_screen()
         print_banner()
         print("Select an option:\n")
-        print("  🌟 [1] 📂 Organize from Telegram Desktop Export  (Recommended - Zero API needed!)")
-        print("     [2] 📥 Download via Telegram API (Telethon)     (Requires API credentials)")
-        print("     [3] 📚 Regenerate Channel Catalog (README.md)")
+        print("  🚀 [1] 📥 Direct Telegram Login & Download  (QR Code or Phone - No my.telegram.org needed!)")
+        print("     [2] 📂 Organize from Telegram Desktop Export  (Offline mode from exported folder)")
+        print("     [3] 📚 Regenerate Channel Catalog & RSS (README.md & feed.xml)")
         print("     [4] 🚀 Commit and Push Archive to GitHub")
         print("     [5] ⚙️  Settings & Configuration")
         print("\n     [0] 🚪 Exit")
 
         choice = input("\nEnter choice [0-5]: ").strip()
         if choice == "1":
-            run_export_import(cfg)
+            asyncio.run(run_direct_telegram_download(cfg))
         elif choice == "2":
-            asyncio.run(run_api_download_menu(cfg))
+            run_export_import(cfg)
         elif choice == "3":
             if cfg.output_dir.exists():
                 for ch_dir in cfg.output_dir.iterdir():

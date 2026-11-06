@@ -54,32 +54,92 @@ class PodcastDownloader:
         self.config = config
         proxy = self.config.proxy_tuple
         
-        # Initialize Telethon Client
+        # Initialize Telethon Client with official client identification
         self.client = TelegramClient(
             str(self.config.session_path),
             int(self.config.api_id),
             self.config.api_hash,
-            proxy=proxy
+            proxy=proxy,
+            device_model="Desktop",
+            system_version="Windows 11",
+            app_version="5.0.0",
+            lang_code="en",
+            system_lang_code="en"
         )
         self.channel_entity = None
         self.channel_title = ""
         self.channel_username = ""
 
     async def connect(self):
-        """Connects and authorizes with Telegram."""
-        if not self.client.is_connected():
-            await self.client.connect()
+        """Connects and authorizes with Telegram via QR Code or Phone."""
+        try:
+            if not self.client.is_connected():
+                await self.client.connect()
+        except Exception as conn_err:
+            print(f"\n⚠️ Connection to Telegram failed: {conn_err}")
+            if not self.config.proxy_enabled:
+                print("💡 Note: If you are in a country with restricted Telegram access,")
+                print("   enable the proxy in settings (e.g. SOCKS5 127.0.0.1:10808 or 7890).")
+                enable_now = input("Enable local proxy now (127.0.0.1:10808)? [Y/n]: ").strip().lower()
+                if enable_now in ("", "y", "yes"):
+                    self.config.update(PROXY_ENABLED="true", PROXY_TYPE="socks5", PROXY_HOST="127.0.0.1", PROXY_PORT="10808")
+                    # Recreate client with proxy
+                    self.client = TelegramClient(
+                        str(self.config.session_path),
+                        int(self.config.api_id),
+                        self.config.api_hash,
+                        proxy=self.config.proxy_tuple,
+                        device_model="Desktop",
+                        system_version="Windows 11",
+                        app_version="5.0.0"
+                    )
+                    await self.client.connect()
+            else:
+                raise conn_err
 
         if not await self.client.is_user_authorized():
-            print("\n🔑 Telegram Authorization Required:")
-            phone = self.config.phone or input("Enter your phone number (international format e.g. +98912...): ").strip()
-            await self.client.start(phone=phone)
-            # Save phone to config if successful
-            self.config.update(TG_PHONE=phone)
+            print("\n" + "="*60)
+            print("🔑 Telegram Login Required")
+            print("Choose your login method:")
+            print("  [1] 📲 Scan QR Code with Telegram Mobile App (Fastest & Easiest)")
+            print("  [2] 📱 Phone Number + Verification Code")
+            print("="*60)
+            login_choice = input("Select [1/2] (Default: 1): ").strip()
+
+            if login_choice == "2":
+                phone = self.config.phone or input("Enter phone number (+98...): ").strip()
+                await self.client.start(phone=phone)
+                self.config.update(TG_PHONE=phone)
+            else:
+                # QR Code Login
+                try:
+                    import qrcode
+                    qr_login = await self.client.qr_login()
+                    print("\n📲 Open Telegram on your phone:")
+                    print("   Settings -> Devices -> Link Desktop Device")
+                    print("   Then scan this QR code:\n")
+
+                    qr = qrcode.QRCode()
+                    qr.add_data(qr_login.url)
+                    qr.print_ascii(invert=True)
+
+                    print("\nWaiting for QR scan...")
+                    try:
+                        user = await qr_login.wait(timeout=90)
+                    except asyncio.TimeoutError:
+                        print("QR code expired. Falling back to phone number login:")
+                        phone = self.config.phone or input("Enter phone number (+98...): ").strip()
+                        await self.client.start(phone=phone)
+                        self.config.update(TG_PHONE=phone)
+                except Exception as qr_err:
+                    print(f"QR Login notice: {qr_err}. Falling back to phone login:")
+                    phone = self.config.phone or input("Enter phone number (+98...): ").strip()
+                    await self.client.start(phone=phone)
+                    self.config.update(TG_PHONE=phone)
 
         me = await self.client.get_me()
-        user_name = me.first_name + (f" {me.last_name}" if me.last_name else "")
-        print(f"Logged in as: {user_name} (@{me.username or 'NoUsername'})")
+        user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+        print(f"\n✅ Logged in as: {user_name} (@{me.username or 'NoUsername'})")
 
     async def resolve_channel(self, target: Optional[str] = None):
         """Resolves target channel username/link/id."""

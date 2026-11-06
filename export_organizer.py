@@ -19,6 +19,30 @@ from utils import (
 from metadata_manager import EpisodeMetadata, embed_audio_tags, build_channel_catalog
 
 
+def find_recent_telegram_exports() -> List[Path]:
+    """Finds recently exported ChatExport_* directories in common Windows locations."""
+    user_home = Path.home()
+    search_dirs = [
+        user_home / "Downloads" / "Telegram Desktop",
+        user_home / "Downloads",
+        user_home / "Documents" / "Telegram Desktop",
+        user_home / "Documents",
+        user_home / "Desktop",
+        Path(".")
+    ]
+
+    found = []
+    for d in search_dirs:
+        if d.exists():
+            for p in d.glob("ChatExport_*"):
+                if p.is_dir() and ((p / "result.json").exists() or (p / "messages.html").exists()):
+                    found.append(p)
+
+    # Sort newest first
+    found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return found
+
+
 def parse_telegram_text_entities(text_field: Union[str, list]) -> str:
     """
     Parses Telegram JSON export 'text' field.
