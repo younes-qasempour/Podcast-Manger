@@ -152,3 +152,4 @@ Select an action:
 
 - Your `.env` and `*.session` files are **strictly ignored** by `.gitignore`. They will never be pushed to your public or private GitHub repository.
 - Telegram sessions are stored locally in your project folder, so you only log in once.
+

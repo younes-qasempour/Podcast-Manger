@@ -314,3 +314,4 @@ class PodcastDownloader:
         print(f"Catalog updated: {readme_path}")
 
         return downloaded_dirs
+

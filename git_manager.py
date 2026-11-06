@@ -186,3 +186,4 @@ class GitManager:
             return False, f"Git push failed: {msg}"
 
         return True, f"Successfully pushed to {remote} on branch {branch}!"
+

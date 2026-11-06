@@ -11,3 +11,4 @@ pillow>=10.0.0
 # Proxy Support (for SOCKS5 / HTTP proxies)
 PySocks>=1.7.1
 python-socks>=2.0.0
+

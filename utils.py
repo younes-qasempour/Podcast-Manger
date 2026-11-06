@@ -131,3 +131,4 @@ def format_duration(seconds: int) -> str:
     if hours > 0:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+

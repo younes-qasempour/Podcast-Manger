@@ -12,10 +12,13 @@ from utils import (
     format_size
 )
 
-# Optional mutagen import for ID3 tagging
+# Mutagen imports for audio tagging
 try:
     from mutagen.mp3 import MP3
     from mutagen.id3 import ID3, TIT2, TPE1, TALB, TRCK, COMM, APIC, ID3NoHeaderError
+    from mutagen.mp4 import MP4, MP4Cover
+    from mutagen.oggvorbis import OggVorbis
+    from mutagen.flac import FLAC, Picture
     MUTAGEN_AVAILABLE = True
 except ImportError:
     MUTAGEN_AVAILABLE = False
@@ -130,49 +133,109 @@ class EpisodeMetadata:
             f.write("\n".join(lines))
 
 
-def embed_id3_tags(
-    mp3_path: Path,
+def embed_audio_tags(
+    audio_path: Path,
     metadata: EpisodeMetadata,
     cover_path: Optional[Path] = None
 ) -> bool:
-    """Embeds ID3v2 tags (title, artist, album, track number, caption, and cover art) into MP3."""
-    if not MUTAGEN_AVAILABLE or not mp3_path.exists():
+    """Embeds metadata (title, artist, album, track number, caption, and cover art) into audio file."""
+    if not MUTAGEN_AVAILABLE or not audio_path.exists():
         return False
 
+    ext = audio_path.suffix.lower()
     try:
-        try:
-            audio = ID3(mp3_path)
-        except ID3NoHeaderError:
-            audio = ID3()
+        if ext == ".mp3":
+            try:
+                audio = ID3(audio_path)
+            except ID3NoHeaderError:
+                audio = ID3()
 
-        # Set text frames
-        audio.add(TIT2(encoding=3, text=metadata.title))
-        if metadata.artist:
-            audio.add(TPE1(encoding=3, text=metadata.artist))
-        if metadata.series_title:
-            audio.add(TALB(encoding=3, text=metadata.series_title))
-        if metadata.episode_number:
-            audio.add(TRCK(encoding=3, text=str(metadata.episode_number)))
-        if metadata.caption:
-            audio.add(COMM(encoding=3, lang="eng", desc="Telegram Caption", text=metadata.caption))
+            audio.add(TIT2(encoding=3, text=metadata.title))
+            if metadata.artist:
+                audio.add(TPE1(encoding=3, text=metadata.artist))
+            if metadata.series_title:
+                audio.add(TALB(encoding=3, text=metadata.series_title))
+            if metadata.episode_number:
+                audio.add(TRCK(encoding=3, text=str(metadata.episode_number)))
+            if metadata.caption:
+                audio.add(COMM(encoding=3, lang="eng", desc="Telegram Caption", text=metadata.caption))
 
-        # Attach picture if exists
-        if cover_path and cover_path.exists():
-            mime = "image/jpeg" if cover_path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-            with open(cover_path, "rb") as img_f:
-                audio.add(APIC(
-                    encoding=3,
-                    mime=mime,
-                    type=3,  # Front cover
-                    desc="Cover",
-                    data=img_f.read()
-                ))
+            if cover_path and cover_path.exists():
+                mime = "image/jpeg" if cover_path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+                with open(cover_path, "rb") as img_f:
+                    audio.add(APIC(
+                        encoding=3,
+                        mime=mime,
+                        type=3,  # Front cover
+                        desc="Cover",
+                        data=img_f.read()
+                    ))
+            audio.save(audio_path, v2_version=3)
+            return True
 
-        audio.save(mp3_path, v2_version=3)
-        return True
+        elif ext in (".m4a", ".mp4", ".aac"):
+            mp4 = MP4(audio_path)
+            mp4["\xa9nam"] = metadata.title
+            if metadata.artist:
+                mp4["\xa9ART"] = metadata.artist
+            if metadata.series_title:
+                mp4["\xa9alb"] = metadata.series_title
+            if metadata.episode_number:
+                mp4["trkn"] = [(metadata.episode_number, 0)]
+            if metadata.caption:
+                mp4["\xa9cmt"] = metadata.caption
+            if cover_path and cover_path.exists():
+                img_format = MP4Cover.FORMAT_JPEG if cover_path.suffix.lower() in (".jpg", ".jpeg") else MP4Cover.FORMAT_PNG
+                with open(cover_path, "rb") as img_f:
+                    mp4["covr"] = [MP4Cover(img_f.read(), imageformat=img_format)]
+            mp4.save()
+            return True
+
+        elif ext in (".ogg", ".oga"):
+            ogg = OggVorbis(audio_path)
+            ogg["title"] = metadata.title
+            if metadata.artist:
+                ogg["artist"] = metadata.artist
+            if metadata.series_title:
+                ogg["album"] = metadata.series_title
+            if metadata.episode_number:
+                ogg["tracknumber"] = str(metadata.episode_number)
+            if metadata.caption:
+                ogg["comment"] = metadata.caption
+            ogg.save()
+            return True
+
+        elif ext == ".flac":
+            flac = FLAC(audio_path)
+            flac["title"] = metadata.title
+            if metadata.artist:
+                flac["artist"] = metadata.artist
+            if metadata.series_title:
+                flac["album"] = metadata.series_title
+            if metadata.episode_number:
+                flac["tracknumber"] = str(metadata.episode_number)
+            if metadata.caption:
+                flac["comment"] = metadata.caption
+            if cover_path and cover_path.exists():
+                pic = Picture()
+                pic.type = 3
+                pic.mime = "image/jpeg" if cover_path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+                with open(cover_path, "rb") as img_f:
+                    pic.data = img_f.read()
+                flac.clear_pictures()
+                flac.add_picture(pic)
+            flac.save()
+            return True
+
     except Exception as e:
-        print(f"Warning: Failed to embed ID3 tags into {mp3_path.name}: {e}")
+        print(f"Warning: Failed to embed audio tags into {audio_path.name}: {e}")
         return False
+
+    return False
+
+
+# Keep alias for backwards compatibility
+embed_id3_tags = embed_audio_tags
 
 
 def build_channel_catalog(channel_dir: Path, channel_title: str = "Telegram Podcasts") -> Path:
@@ -250,3 +313,4 @@ def build_channel_catalog(channel_dir: Path, channel_title: str = "Telegram Podc
         f.write("\n".join(catalog_lines))
 
     return readme_path
+
