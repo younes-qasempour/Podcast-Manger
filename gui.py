@@ -14,11 +14,15 @@ from PyQt6.QtWidgets import (
     QProgressBar, QGroupBox, QCheckBox, QMessageBox, QSplitter,
     QListWidget, QListWidgetItem, QTabWidget, QComboBox, QFormLayout,
     QSpinBox, QFrame, QScrollArea, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView
+    QHeaderView, QAbstractItemView, QDialog, QDialogButtonBox,
+    QStackedWidget, QToolTip
 )
-from PyQt6.QtCore import pyqtSignal, QObject, Qt, QSize
-from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor
+from PyQt6.QtCore import pyqtSignal, QObject, Qt, QSize, QTimer
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor, QImage, QDragEnterEvent, QDropEvent
 from PIL import Image
+from PIL.ImageQt import ImageQt
+import qrcode
+from telethon.errors import SessionPasswordNeededError
 
 from config import Config
 from downloader import PodcastDownloader
@@ -33,20 +37,257 @@ from utils import (
 
 
 # =============================================================================
+# Drag-and-Drop Image Label for Cover Art
+# =============================================================================
+class DropCoverLabel(QLabel):
+    fileDropped = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setFixedSize(200, 200)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("""
+            DropCoverLabel {
+                border: 2px dashed #89b4fa;
+                border-radius: 12px;
+                background-color: #11111b;
+                color: #a6adc8;
+                font-weight: bold;
+            }
+            DropCoverLabel:hover {
+                border-color: #a6e3a1;
+                background-color: #181825;
+            }
+        """)
+        self.setText("Drop Image Here\nor Click 'Change'")
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                path = urls[0].toLocalFile().lower()
+                if path.endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp")):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        if urls:
+            file_path = urls[0].toLocalFile()
+            self.fileDropped.emit(file_path)
+            event.acceptProposedAction()
+
+
+# =============================================================================
+# Telegram In-App Login Dialog (QR Code + Phone Number + 2FA)
+# =============================================================================
+class TelegramLoginDialog(QDialog):
+    loginSuccessful = pyqtSignal(str)
+
+    def __init__(self, config: Config, parent=None):
+        super().__init__(parent)
+        self.cfg = config
+        self.downloader = PodcastDownloader(self.cfg)
+        self.loop = asyncio.new_event_loop()
+        self.phone_code_hash = None
+        self.is_qr_active = False
+
+        self.setWindowTitle("🔑 Log In to Telegram")
+        self.resize(460, 520)
+        self.setStyleSheet("""
+            QDialog { background-color: #1e1e2e; color: #cdd6f4; }
+            QLabel { color: #cdd6f4; font-family: 'Segoe UI', Tahoma, sans-serif; }
+            QLineEdit { background-color: #313244; border: 1px solid #45475a; border-radius: 6px; padding: 8px 10px; color: #f5e0dc; font-size: 13px; }
+            QPushButton { background-color: #89b4fa; color: #11111b; font-weight: bold; border-radius: 6px; padding: 9px 16px; font-size: 13px; }
+            QPushButton:hover { background-color: #b4befe; }
+            QTabWidget::pane { border: 1px solid #313244; background-color: #181825; border-radius: 8px; }
+            QTabBar::tab { background-color: #181825; color: #a6adc8; padding: 10px 20px; font-weight: bold; }
+            QTabBar::tab:selected { background-color: #1e1e2e; color: #89b4fa; border-bottom: 2px solid #89b4fa; }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        header = QLabel("Connect Your Telegram Account")
+        header.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        header.setStyleSheet("color: #89b4fa; margin-bottom: 4px;")
+        layout.addWidget(header)
+
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+
+        # TAB 1: QR Code
+        qr_tab = QWidget()
+        qr_layout = QVBoxLayout(qr_tab)
+        qr_layout.setSpacing(10)
+        qr_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        inst_label = QLabel("1. Open Telegram on your phone\n2. Go to Settings > Devices > Link Desktop Device\n3. Scan this QR code:")
+        inst_label.setStyleSheet("color: #a6adc8; font-size: 12px; line-height: 1.4;")
+        inst_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qr_layout.addWidget(inst_label)
+
+        self.qr_label = QLabel()
+        self.qr_label.setFixedSize(240, 240)
+        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.qr_label.setStyleSheet("background-color: white; border-radius: 12px; padding: 8px;")
+        qr_layout.addWidget(self.qr_label)
+
+        self.qr_status = QLabel("Generating QR code...")
+        self.qr_status.setStyleSheet("color: #f9e2af; font-weight: bold;")
+        self.qr_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qr_layout.addWidget(self.qr_status)
+
+        refresh_qr_btn = QPushButton("🔄 Refresh QR Code")
+        refresh_qr_btn.clicked.connect(self.start_qr_login)
+        qr_layout.addWidget(refresh_qr_btn)
+
+        self.tab_widget.addTab(qr_tab, "📲 Scan QR Code")
+
+        # TAB 2: Phone Number + Code
+        phone_tab = QWidget()
+        phone_layout = QVBoxLayout(phone_tab)
+        phone_layout.setSpacing(10)
+
+        phone_layout.addWidget(QLabel("Phone Number (International format, e.g. +98912...):"))
+        self.phone_input = QLineEdit(self.cfg.phone)
+        self.phone_input.setPlaceholderText("+989123456789")
+        phone_layout.addWidget(self.phone_input)
+
+        self.send_code_btn = QPushButton("📨 Send Verification Code")
+        self.send_code_btn.clicked.connect(self.send_phone_code)
+        phone_layout.addWidget(self.send_code_btn)
+
+        phone_layout.addSpacing(10)
+        phone_layout.addWidget(QLabel("Verification Code (sent to your Telegram app):"))
+        self.code_input = QLineEdit()
+        self.code_input.setPlaceholderText("12345")
+        phone_layout.addWidget(self.code_input)
+
+        phone_layout.addWidget(QLabel("2FA Password (if enabled on your account):"))
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        phone_layout.addWidget(self.password_input)
+
+        self.verify_btn = QPushButton("✅ Verify & Log In")
+        self.verify_btn.clicked.connect(self.verify_code)
+        phone_layout.addWidget(self.verify_btn)
+
+        phone_layout.addStretch()
+        self.tab_widget.addTab(phone_tab, "📱 Phone Number")
+
+        # Start QR login on open
+        QTimer.singleShot(200, self.start_qr_login)
+
+    def start_qr_login(self):
+        self.is_qr_active = True
+        self.qr_status.setText("Connecting to Telegram...")
+        threading.Thread(target=self._qr_worker, daemon=True).start()
+
+    def _qr_worker(self):
+        asyncio.set_event_loop(self.loop)
+        try:
+            if not self.downloader.client.is_connected():
+                self.loop.run_until_complete(self.downloader.client.connect())
+
+            qr_login = self.loop.run_until_complete(self.downloader.client.qr_login())
+            
+            # Generate QPixmap from QR
+            qr = qrcode.QRCode(box_size=6, border=2)
+            qr.add_data(qr_login.url)
+            img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
+            qimg = ImageQt(img)
+            pix = QPixmap.fromImage(qimg)
+
+            # Update UI on main thread
+            QTimer.singleShot(0, lambda: self._show_qr(pix))
+
+            # Wait for scan
+            self.loop.run_until_complete(qr_login.wait(timeout=90))
+            me = self.loop.run_until_complete(self.downloader.client.get_me())
+            user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+            QTimer.singleShot(0, lambda: self._on_login_success(user_name))
+
+        except Exception as e:
+            QTimer.singleShot(0, lambda: self.qr_status.setText(f"QR Error: {e}"))
+
+    def _show_qr(self, pix: QPixmap):
+        self.qr_label.setPixmap(pix.scaled(220, 220, Qt.AspectRatioMode.KeepAspectRatio))
+        self.qr_status.setText("Waiting for scan on mobile Telegram...")
+
+    def _on_login_success(self, user_name: str):
+        self.loginSuccessful.emit(user_name)
+        QMessageBox.information(self, "Welcome!", f"Successfully logged in as {user_name}!")
+        self.accept()
+
+    def send_phone_code(self):
+        phone = self.phone_input.text().strip()
+        if not phone:
+            QMessageBox.warning(self, "Phone Required", "Please enter your phone number.")
+            return
+
+        self.send_code_btn.setEnabled(False)
+        self.send_code_btn.setText("Sending...")
+
+        def worker():
+            asyncio.set_event_loop(self.loop)
+            try:
+                if not self.downloader.client.is_connected():
+                    self.loop.run_until_complete(self.downloader.client.connect())
+                res = self.loop.run_until_complete(self.downloader.client.send_code_request(phone))
+                self.phone_code_hash = res.phone_code_hash
+                self.cfg.update(TG_PHONE=phone)
+                QTimer.singleShot(0, lambda: QMessageBox.information(self, "Code Sent", "Verification code sent to your Telegram app!"))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", str(e)))
+            finally:
+                QTimer.singleShot(0, lambda: self.send_code_btn.setText("📨 Send Verification Code"))
+                QTimer.singleShot(0, lambda: self.send_code_btn.setEnabled(True))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def verify_code(self):
+        phone = self.phone_input.text().strip()
+        code = self.code_input.text().strip()
+        pwd = self.password_input.text().strip()
+
+        if not phone or not code:
+            QMessageBox.warning(self, "Input Required", "Please enter both phone and verification code.")
+            return
+
+        def worker():
+            asyncio.set_event_loop(self.loop)
+            try:
+                try:
+                    self.loop.run_until_complete(
+                        self.downloader.client.sign_in(phone=phone, code=code, phone_code_hash=self.phone_code_hash)
+                    )
+                except SessionPasswordNeededError:
+                    if not pwd:
+                        QTimer.singleShot(0, lambda: QMessageBox.warning(self, "2FA Password Required", "Your account has Two-Step Verification enabled. Please enter your password above."))
+                        return
+                    self.loop.run_until_complete(self.downloader.client.sign_in(password=pwd))
+
+                me = self.loop.run_until_complete(self.downloader.client.get_me())
+                user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+                QTimer.singleShot(0, lambda: self._on_login_success(user_name))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Login Error", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
+# =============================================================================
 # Background Worker Signals for Thread Safety
 # =============================================================================
 class DownloaderSignals(QObject):
     log = pyqtSignal(str)
-    scan_finished = pyqtSignal(list, dict, str)  # all_podcasts, series_dict, channel_title
-    overall_progress = pyqtSignal(int, int)       # current_ep_idx, total_eps
-    file_progress = pyqtSignal(int, int, str)     # current_bytes, total_bytes, status_text
-    episode_finished = pyqtSignal(int, str)       # episode index, folder name
-    download_all_finished = pyqtSignal(bool, str) # success, message
-
-
-class GitSignals(QObject):
-    log = pyqtSignal(str)
-    finished = pyqtSignal(bool, str)
+    scan_finished = pyqtSignal(list, dict, str)
+    overall_progress = pyqtSignal(int, int)
+    file_progress = pyqtSignal(int, int, str)
+    download_all_finished = pyqtSignal(bool, str)
 
 
 # =============================================================================
@@ -63,181 +304,83 @@ class PodcastStudioGUI(QMainWindow):
         self.pending_new_cover_path: Optional[Path] = None
 
         # Downloader State
-        self.downloader: Optional[PodcastDownloader] = None
+        self.downloader = PodcastDownloader(self.cfg)
         self.scanned_podcasts: List[Dict[str, Any]] = []
         self.series_groups: Dict[str, List[Dict[str, Any]]] = {}
         self.is_download_running = False
         self.cancel_download = False
+        self.user_display_name = "Not Logged In"
 
         self.init_ui()
+        self.check_auth_status_async()
         self.load_library_series_list()
 
     def init_ui(self):
         self.setWindowTitle("🎙️ Telegram Podcast Studio & Downloader")
-        self.resize(1180, 820)
-        self.setMinimumSize(950, 680)
+        self.resize(1200, 840)
+        self.setMinimumSize(960, 700)
 
-        # Dark modern theme with smooth contrast and clean Persian typography
         self.setStyleSheet("""
-            QMainWindow {
-                background-color: #181825;
-                color: #cdd6f4;
-            }
-            QWidget {
-                color: #cdd6f4;
-                font-family: 'Segoe UI', 'Tahoma', 'Vazirmatn', sans-serif;
-                font-size: 13px;
-            }
-            QTabWidget::pane {
-                border: 1px solid #313244;
-                background-color: #1e1e2e;
-                border-radius: 8px;
-            }
-            QTabBar::tab {
-                background-color: #181825;
-                color: #a6adc8;
-                padding: 11px 26px;
-                margin-right: 4px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                font-weight: bold;
-            }
-            QTabBar::tab:selected {
-                background-color: #1e1e2e;
-                color: #89b4fa;
-                border-bottom: 2px solid #89b4fa;
-            }
-            QGroupBox {
-                border: 1px solid #45475a;
-                border-radius: 8px;
-                margin-top: 10px;
-                font-weight: bold;
-                padding: 14px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 5px;
-                color: #89b4fa;
-            }
-            QLineEdit, QSpinBox, QComboBox {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 6px;
-                padding: 7px 10px;
-                color: #f5e0dc;
-            }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
-                border: 1px solid #89b4fa;
-            }
-            QTextEdit {
-                background-color: #181825;
-                border: 1px solid #45475a;
-                border-radius: 6px;
-                padding: 8px;
-                color: #cdd6f4;
-                font-size: 13px;
-                line-height: 1.4;
-            }
-            QTableWidget {
-                background-color: #181825;
-                border: 1px solid #313244;
-                border-radius: 8px;
-                gridline-color: #313244;
-                selection-background-color: #45475a;
-            }
-            QHeaderView::section {
-                background-color: #1e1e2e;
-                color: #89b4fa;
-                font-weight: bold;
-                padding: 6px;
-                border: 1px solid #313244;
-            }
-            QListWidget {
-                background-color: #181825;
-                border: 1px solid #313244;
-                border-radius: 8px;
-                outline: none;
-                padding: 4px;
-            }
-            QListWidget::item {
-                border-radius: 6px;
-                padding: 8px;
-                margin-bottom: 4px;
-                background-color: #1e1e2e;
-            }
-            QListWidget::item:hover {
-                background-color: #313244;
-            }
-            QListWidget::item:selected {
-                background-color: #45475a;
-                border-left: 3px solid #89b4fa;
-            }
-            QPushButton {
-                background-color: #89b4fa;
-                color: #11111b;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover {
-                background-color: #b4befe;
-            }
-            QPushButton#actionBtn {
-                background-color: #a6e3a1;
-                color: #11111b;
-                font-size: 14px;
-                padding: 10px 20px;
-            }
-            QPushButton#actionBtn:hover {
-                background-color: #94e2d5;
-            }
-            QPushButton#playBtn {
-                background-color: #f9e2af;
-                color: #11111b;
-            }
-            QPushButton#playBtn:hover {
-                background-color: #fab387;
-            }
-            QPushButton#gitBtn {
-                background-color: #cba6f7;
-                color: #11111b;
-            }
-            QPushButton#gitBtn:hover {
-                background-color: #f5c2e7;
-            }
-            QPushButton#cancelBtn {
-                background-color: #f38ba8;
-                color: #11111b;
-            }
-            QPushButton#cancelBtn:hover {
-                background-color: #eba0ac;
-            }
-            QPushButton#secondaryBtn {
-                background-color: #45475a;
-                color: #cdd6f4;
-            }
-            QPushButton#secondaryBtn:hover {
-                background-color: #585b70;
-            }
-            QProgressBar {
-                border: 1px solid #45475a;
-                border-radius: 5px;
-                text-align: center;
-                background-color: #313244;
-                font-weight: bold;
-            }
-            QProgressBar::chunk {
-                background-color: #a6e3a1;
-                border-radius: 4px;
-            }
+            QMainWindow { background-color: #181825; color: #cdd6f4; }
+            QWidget { color: #cdd6f4; font-family: 'Segoe UI', 'Tahoma', 'Vazirmatn', sans-serif; font-size: 13px; }
+            QTabWidget::pane { border: 1px solid #313244; background-color: #1e1e2e; border-radius: 8px; }
+            QTabBar::tab { background-color: #181825; color: #a6adc8; padding: 11px 26px; margin-right: 4px; border-top-left-radius: 6px; border-top-right-radius: 6px; font-weight: bold; }
+            QTabBar::tab:selected { background-color: #1e1e2e; color: #89b4fa; border-bottom: 2px solid #89b4fa; }
+            QGroupBox { border: 1px solid #45475a; border-radius: 8px; margin-top: 10px; font-weight: bold; padding: 14px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #89b4fa; }
+            QLineEdit, QSpinBox, QComboBox { background-color: #313244; border: 1px solid #45475a; border-radius: 6px; padding: 7px 10px; color: #f5e0dc; }
+            QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #89b4fa; }
+            QTextEdit { background-color: #181825; border: 1px solid #45475a; border-radius: 6px; padding: 8px; color: #cdd6f4; font-size: 13px; line-height: 1.4; }
+            QTableWidget { background-color: #181825; border: 1px solid #313244; border-radius: 8px; gridline-color: #313244; selection-background-color: #45475a; }
+            QHeaderView::section { background-color: #1e1e2e; color: #89b4fa; font-weight: bold; padding: 7px; border: 1px solid #313244; }
+            QListWidget { background-color: #181825; border: 1px solid #313244; border-radius: 8px; outline: none; padding: 4px; }
+            QListWidget::item { border-radius: 6px; padding: 8px; margin-bottom: 4px; background-color: #1e1e2e; }
+            QListWidget::item:hover { background-color: #313244; }
+            QListWidget::item:selected { background-color: #45475a; border-left: 3px solid #89b4fa; }
+            QPushButton { background-color: #89b4fa; color: #11111b; font-weight: bold; border-radius: 6px; padding: 8px 16px; }
+            QPushButton:hover { background-color: #b4befe; }
+            QPushButton#actionBtn { background-color: #a6e3a1; color: #11111b; font-size: 14px; padding: 10px 20px; }
+            QPushButton#actionBtn:hover { background-color: #94e2d5; }
+            QPushButton#playBtn { background-color: #f9e2af; color: #11111b; }
+            QPushButton#playBtn:hover { background-color: #fab387; }
+            QPushButton#gitBtn { background-color: #cba6f7; color: #11111b; }
+            QPushButton#gitBtn:hover { background-color: #f5c2e7; }
+            QPushButton#cancelBtn { background-color: #f38ba8; color: #11111b; }
+            QPushButton#cancelBtn:hover { background-color: #eba0ac; }
+            QPushButton#secondaryBtn { background-color: #45475a; color: #cdd6f4; }
+            QPushButton#secondaryBtn:hover { background-color: #585b70; }
+            QPushButton#accountBtn { background-color: #313244; color: #a6e3a1; border: 1px solid #45475a; padding: 6px 14px; }
+            QPushButton#accountBtn:hover { background-color: #45475a; }
+            QProgressBar { border: 1px solid #45475a; border-radius: 5px; text-align: center; background-color: #313244; font-weight: bold; }
+            QProgressBar::chunk { background-color: #a6e3a1; border-radius: 4px; }
         """)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         root_layout = QVBoxLayout(central_widget)
-        root_layout.setContentsMargins(12, 12, 12, 12)
-        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(12, 10, 12, 10)
+        root_layout.setSpacing(8)
+
+        # Top App Header (Brand + Account Status + Switch Login)
+        top_header = QHBoxLayout()
+        brand_label = QLabel("🎙️ Telegram Podcast Studio & Downloader")
+        brand_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        brand_label.setStyleSheet("color: #89b4fa;")
+        top_header.addWidget(brand_label)
+
+        top_header.addStretch()
+
+        # Account Badge & Login Button
+        self.account_status_label = QLabel("Checking login...")
+        self.account_status_label.setStyleSheet("color: #a6adc8; font-weight: bold; margin-right: 8px;")
+        top_header.addWidget(self.account_status_label)
+
+        self.account_btn = QPushButton("🔑 Telegram Account")
+        self.account_btn.setObjectName("accountBtn")
+        self.account_btn.clicked.connect(self.open_login_dialog)
+        top_header.addWidget(self.account_btn)
+
+        root_layout.addLayout(top_header)
 
         # Tab Widget
         self.tabs = QTabWidget()
@@ -253,13 +396,49 @@ class PodcastStudioGUI(QMainWindow):
         self.init_downloader_tab()
         self.tabs.addTab(self.downloader_tab, "📥 Telegram Downloader")
 
-        # TAB 3: Git & Settings
+        # TAB 3: Git & Sync
         self.settings_tab = QWidget()
         self.init_settings_tab()
         self.tabs.addTab(self.settings_tab, "🐙 GitHub Sync & Settings")
 
-        # Status Bar
         self.statusBar().showMessage("Ready.")
+
+    # =========================================================================
+    # Auth Status Checker
+    # =========================================================================
+    def check_auth_status_async(self):
+        def worker():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                if not self.downloader.client.is_connected():
+                    loop.run_until_complete(self.downloader.client.connect())
+                authorized = loop.run_until_complete(self.downloader.client.is_user_authorized())
+                if authorized:
+                    me = loop.run_until_complete(self.downloader.client.get_me())
+                    user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+                    self.user_display_name = user_name
+                    QTimer.singleShot(0, lambda: self.account_status_label.setText(f"🟢 Connected as: {user_name}"))
+                    QTimer.singleShot(0, lambda: self.account_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold; margin-right: 8px;"))
+                else:
+                    QTimer.singleShot(0, lambda: self.account_status_label.setText("🔴 Not Logged In"))
+                    QTimer.singleShot(0, lambda: self.account_status_label.setStyleSheet("color: #f38ba8; font-weight: bold; margin-right: 8px;"))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self.account_status_label.setText(f"⚠️ Telegram: {e}"))
+            finally:
+                loop.close()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_login_dialog(self):
+        dlg = TelegramLoginDialog(self.cfg, self)
+        dlg.loginSuccessful.connect(self.on_login_dialog_success)
+        dlg.exec()
+
+    def on_login_dialog_success(self, user_name: str):
+        self.user_display_name = user_name
+        self.account_status_label.setText(f"🟢 Connected as: {user_name}")
+        self.account_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold; margin-right: 8px;")
 
     # =========================================================================
     # TAB 1: Library & Studio (Explorer, Info Editor, Thumbnail Customizer)
@@ -273,7 +452,7 @@ class PodcastStudioGUI(QMainWindow):
         top_bar = QHBoxLayout()
         top_bar.addWidget(QLabel("Series:"))
         self.lib_series_combo = QComboBox()
-        self.lib_series_combo.setMinimumWidth(220)
+        self.lib_series_combo.setMinimumWidth(240)
         self.lib_series_combo.currentIndexChanged.connect(self.on_library_series_selected)
         top_bar.addWidget(self.lib_series_combo)
 
@@ -300,13 +479,13 @@ class PodcastStudioGUI(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(8)
 
-        # Left: Episode List
+        # Left: Episode List & Stats
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        self.lib_count_label = QLabel("Episodes: 0")
-        self.lib_count_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
-        left_layout.addWidget(self.lib_count_label)
+        self.lib_stats_label = QLabel("Episodes: 0  |  Duration: 00:00  |  Storage: 0 B")
+        self.lib_stats_label.setStyleSheet("color: #89b4fa; font-weight: bold;")
+        left_layout.addWidget(self.lib_stats_label)
 
         self.lib_episode_list = QListWidget()
         self.lib_episode_list.setIconSize(QSize(48, 48))
@@ -326,20 +505,11 @@ class PodcastStudioGUI(QMainWindow):
 
         # Artwork + Quick Action Bar
         art_box = QHBoxLayout()
-        art_box.setSpacing(15)
+        art_box.setSpacing(18)
 
-        # Cover Preview Label
-        self.cover_label = QLabel()
-        self.cover_label.setFixedSize(180, 180)
-        self.cover_label.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #45475a;
-                border-radius: 10px;
-                background-color: #181825;
-            }
-        """)
-        self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cover_label.setText("No Cover")
+        # Drag & Drop Cover Preview Label
+        self.cover_label = DropCoverLabel()
+        self.cover_label.fileDropped.connect(self.on_cover_file_dropped)
         art_box.addWidget(self.cover_label)
 
         # Cover buttons & Audio controls
@@ -355,7 +525,7 @@ class PodcastStudioGUI(QMainWindow):
         reset_cover_btn.clicked.connect(self.reset_cover)
         art_btn_layout.addWidget(reset_cover_btn)
 
-        art_btn_layout.addSpacing(10)
+        art_btn_layout.addSpacing(8)
 
         self.play_audio_btn = QPushButton("▶️ Play Audio Track")
         self.play_audio_btn.setObjectName("playBtn")
@@ -435,41 +605,41 @@ class PodcastStudioGUI(QMainWindow):
         layout.setSpacing(10)
 
         # Connection Row
-        conn_box = QGroupBox("1. Telegram Channel Connection")
+        conn_box = QGroupBox("1. Target Telegram Channel")
         conn_layout = QHBoxLayout(conn_box)
 
-        conn_layout.addWidget(QLabel("Target Channel:"))
+        conn_layout.addWidget(QLabel("Channel Username / Link:"))
         self.dl_channel_input = QLineEdit(self.cfg.target_channel)
         self.dl_channel_input.setPlaceholderText("@agrafoss or https://t.me/agrafoss")
         conn_layout.addWidget(self.dl_channel_input)
 
-        self.scan_btn = QPushButton("🔗 Scan Channel Podcasts")
+        self.scan_btn = QPushButton("🔗 Scan Podcasts in Channel")
         self.scan_btn.clicked.connect(self.start_channel_scan)
         conn_layout.addWidget(self.scan_btn)
 
-        self.account_badge = QLabel("⚪ Not scanned yet")
-        self.account_badge.setStyleSheet("color: #a6adc8; font-weight: bold; margin-left: 10px;")
-        conn_layout.addWidget(self.account_badge)
+        self.scan_status_badge = QLabel("⚪ Not scanned")
+        self.scan_status_badge.setStyleSheet("color: #a6adc8; font-weight: bold; margin-left: 10px;")
+        conn_layout.addWidget(self.scan_status_badge)
 
         layout.addWidget(conn_box)
 
         # Series Filter Row
         series_filter_box = QHBoxLayout()
-        series_filter_box.addWidget(QLabel("📚 Filter by Series / Hashtag:"))
+        series_filter_box.addWidget(QLabel("📚 Series (#Hashtag):"))
         self.dl_series_combo = QComboBox()
         self.dl_series_combo.setMinimumWidth(260)
         self.dl_series_combo.currentIndexChanged.connect(self.on_dl_series_changed)
         series_filter_box.addWidget(self.dl_series_combo)
 
-        series_filter_box.addSpacing(20)
+        series_filter_box.addSpacing(16)
 
         # Selection Helpers
-        select_all_btn = QPushButton("☑️ Select All")
+        select_all_btn = QPushButton("☑️ All")
         select_all_btn.setObjectName("secondaryBtn")
         select_all_btn.clicked.connect(lambda: self.set_table_selection(True))
         series_filter_box.addWidget(select_all_btn)
 
-        deselect_btn = QPushButton("☐ Deselect All")
+        deselect_btn = QPushButton("☐ None")
         deselect_btn.setObjectName("secondaryBtn")
         deselect_btn.clicked.connect(lambda: self.set_table_selection(False))
         series_filter_box.addWidget(deselect_btn)
@@ -479,6 +649,11 @@ class PodcastStudioGUI(QMainWindow):
         select_latest5_btn.clicked.connect(lambda: self.select_latest_n(5))
         series_filter_box.addWidget(select_latest5_btn)
 
+        select_latest10_btn = QPushButton("✨ Latest 10")
+        select_latest10_btn.setObjectName("secondaryBtn")
+        select_latest10_btn.clicked.connect(lambda: self.select_latest_n(10))
+        series_filter_box.addWidget(select_latest10_btn)
+
         select_undownloaded_btn = QPushButton("🔄 Un-downloaded Only")
         select_undownloaded_btn.setObjectName("secondaryBtn")
         select_undownloaded_btn.clicked.connect(self.select_undownloaded_only)
@@ -486,6 +661,11 @@ class PodcastStudioGUI(QMainWindow):
 
         series_filter_box.addStretch()
         layout.addLayout(series_filter_box)
+
+        # Selection Stats Label
+        self.selection_stats_label = QLabel("Selected: 0 episodes (0 MB)")
+        self.selection_stats_label.setStyleSheet("color: #89b4fa; font-weight: bold;")
+        layout.addWidget(self.selection_stats_label)
 
         # Episodes Table
         self.ep_table = QTableWidget()
@@ -499,6 +679,7 @@ class PodcastStudioGUI(QMainWindow):
         self.ep_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.ep_table.setAlternatingRowColors(True)
         self.ep_table.cellClicked.connect(self.on_table_cell_clicked)
+        self.ep_table.itemChanged.connect(self.update_selection_stats)
         layout.addWidget(self.ep_table)
 
         # Progress & Action Controls
@@ -529,7 +710,7 @@ class PodcastStudioGUI(QMainWindow):
         self.download_btn.clicked.connect(self.start_downloading_selected)
         action_row.addWidget(self.download_btn)
 
-        self.cancel_btn = QPushButton("⛔ Cancel")
+        self.cancel_btn = QPushButton("⛔ Cancel Download")
         self.cancel_btn.setObjectName("cancelBtn")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self.on_cancel_download)
@@ -557,7 +738,7 @@ class PodcastStudioGUI(QMainWindow):
         title.setStyleSheet("color: #89b4fa;")
         layout.addWidget(title)
 
-        sett_box = QGroupBox("GitHub Configuration")
+        sett_box = QGroupBox("GitHub Repository Settings")
         sett_layout = QFormLayout(sett_box)
         sett_layout.setSpacing(10)
 
@@ -607,8 +788,8 @@ class PodcastStudioGUI(QMainWindow):
         self.cfg.update(TARGET_CHANNEL=target)
 
         self.scan_btn.setEnabled(False)
-        self.account_badge.setText("⏳ Connecting & scanning...")
-        self.log_dl(f"Connecting to Telegram for target: {target}...")
+        self.scan_status_badge.setText("⏳ Connecting & scanning...")
+        self.log_dl(f"Connecting to Telegram for channel: {target}...")
 
         self.dl_signals = DownloaderSignals()
         self.dl_signals.log.connect(self.log_dl)
@@ -618,13 +799,12 @@ class PodcastStudioGUI(QMainWindow):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                dl = PodcastDownloader(self.cfg)
-                self.downloader = dl
-                loop.run_until_complete(dl.connect())
-                loop.run_until_complete(dl.resolve_channel())
-                podcasts = loop.run_until_complete(dl.scan_podcasts())
+                if not self.downloader.client.is_connected():
+                    loop.run_until_complete(self.downloader.connect())
+                loop.run_until_complete(self.downloader.resolve_channel())
+                podcasts = loop.run_until_complete(self.downloader.scan_podcasts())
 
-                # Analyze series hashtags
+                # Group by hashtags / series
                 series_map: Dict[str, List[Dict[str, Any]]] = {}
                 for item in podcasts:
                     m = item["metadata"]
@@ -634,7 +814,7 @@ class PodcastStudioGUI(QMainWindow):
                         series_map[main_tag] = []
                     series_map[main_tag].append(item)
 
-                self.dl_signals.scan_finished.emit(podcasts, series_map, dl.channel_title)
+                self.dl_signals.scan_finished.emit(podcasts, series_map, self.downloader.channel_title)
             except Exception as e:
                 self.dl_signals.log.emit(f"❌ Scan failed: {e}")
                 self.dl_signals.scan_finished.emit([], {}, "")
@@ -646,20 +826,18 @@ class PodcastStudioGUI(QMainWindow):
     def on_channel_scanned(self, podcasts: list, series_map: dict, channel_title: str):
         self.scan_btn.setEnabled(True)
         if not podcasts:
-            self.account_badge.setText("❌ Scan failed or no podcasts found")
+            self.scan_status_badge.setText("❌ Scan failed or no podcasts found")
             return
 
         self.scanned_podcasts = podcasts
         self.series_groups = series_map
-        self.account_badge.setText(f"✅ {channel_title} ({len(podcasts)} episodes)")
+        self.scan_status_badge.setText(f"✅ {channel_title} ({len(podcasts)} episodes)")
         self.log_dl(f"Scan complete: Found {len(podcasts)} episodes across {len(series_map)} series.")
 
-        # Populate Series Dropdown
         self.dl_series_combo.blockSignals(True)
         self.dl_series_combo.clear()
         self.dl_series_combo.addItem(f"All Episodes ({len(podcasts)} tracks)", userData="ALL")
 
-        # Sort series by count descending
         sorted_series = sorted(series_map.items(), key=lambda x: len(x[1]), reverse=True)
         for tag, items in sorted_series:
             self.dl_series_combo.addItem(f"{tag} ({len(items)} episodes)", userData=tag)
@@ -677,7 +855,6 @@ class PodcastStudioGUI(QMainWindow):
         else:
             active_list = self.series_groups.get(data, [])
 
-        # Sort episodes ascending by episode number (1, 2, ... 92)
         def ep_key(item):
             num = item["metadata"].episode_number
             return (0, num) if num is not None else (1, item["metadata"].message_id)
@@ -686,63 +863,65 @@ class PodcastStudioGUI(QMainWindow):
         self.populate_downloader_table(sorted_list)
 
     def populate_downloader_table(self, items: List[Dict[str, Any]]):
+        self.ep_table.blockSignals(True)
         self.ep_table.setRowCount(len(items))
 
-        # Check existing series folder
         active_series = self.dl_series_combo.currentData()
-        series_clean = sanitize_filename(active_series.lstrip("#") if active_series and active_series != "ALL" else (self.downloader.channel_title if self.downloader else "podcasts"), max_length=50)
+        series_clean = sanitize_filename(
+            active_series.lstrip("#") if active_series and active_series != "ALL" else (self.downloader.channel_title if self.downloader else "podcasts"),
+            max_length=50
+        )
         series_dir = self.cfg.output_dir / series_clean
 
         for row, item in enumerate(items):
             m: EpisodeMetadata = item["metadata"]
-            
-            # Check if downloaded locally
             ep_folder = series_dir / "episodes" / m.folder_name
             is_downloaded = (ep_folder / "audio.mp3").exists()
 
-            # Checkbox item
             chk_item = QTableWidgetItem()
             chk_item.setCheckState(Qt.CheckState.Unchecked if is_downloaded else Qt.CheckState.Checked)
             chk_item.setData(Qt.ItemDataRole.UserRole, item)
             self.ep_table.setItem(row, 0, chk_item)
 
-            # Ep number
             ep_str = f"Ep #{m.episode_number:03d}" if m.episode_number is not None else "No Ep#"
             ep_item = QTableWidgetItem(ep_str)
             ep_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.ep_table.setItem(row, 1, ep_item)
 
-            # Title + Status
             status_tag = " [✅ Saved]" if is_downloaded else ""
             title_item = QTableWidgetItem(f"{m.title}{status_tag}")
             if is_downloaded:
                 title_item.setForeground(QColor("#a6e3a1"))
             self.ep_table.setItem(row, 2, title_item)
 
-            # Duration
             dur_item = QTableWidgetItem(m.duration_formatted)
             dur_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.ep_table.setItem(row, 3, dur_item)
 
-            # File Size
             size_item = QTableWidgetItem(m.file_size_formatted)
             size_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.ep_table.setItem(row, 4, size_item)
 
+        self.ep_table.blockSignals(False)
+        self.update_selection_stats()
+
     def on_table_cell_clicked(self, row: int, col: int):
-        # Toggle checkbox on row click
         item = self.ep_table.item(row, 0)
         if item and col != 0:
             new_state = Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
             item.setCheckState(new_state)
 
     def set_table_selection(self, select: bool):
+        self.ep_table.blockSignals(True)
         for r in range(self.ep_table.rowCount()):
             item = self.ep_table.item(r, 0)
             if item:
                 item.setCheckState(Qt.CheckState.Checked if select else Qt.CheckState.Unchecked)
+        self.ep_table.blockSignals(False)
+        self.update_selection_stats()
 
     def select_latest_n(self, n: int):
+        self.ep_table.blockSignals(True)
         self.set_table_selection(False)
         total = self.ep_table.rowCount()
         start = max(0, total - n)
@@ -750,14 +929,32 @@ class PodcastStudioGUI(QMainWindow):
             item = self.ep_table.item(r, 0)
             if item:
                 item.setCheckState(Qt.CheckState.Checked)
+        self.ep_table.blockSignals(False)
+        self.update_selection_stats()
 
     def select_undownloaded_only(self):
+        self.ep_table.blockSignals(True)
         for r in range(self.ep_table.rowCount()):
             chk_item = self.ep_table.item(r, 0)
             title_item = self.ep_table.item(r, 2)
             if chk_item and title_item:
                 is_saved = "[✅ Saved]" in title_item.text()
                 chk_item.setCheckState(Qt.CheckState.Unchecked if is_saved else Qt.CheckState.Checked)
+        self.ep_table.blockSignals(False)
+        self.update_selection_stats()
+
+    def update_selection_stats(self):
+        count = 0
+        total_bytes = 0
+        for r in range(self.ep_table.rowCount()):
+            item = self.ep_table.item(r, 0)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if data:
+                    count += 1
+                    total_bytes += data["metadata"].file_size
+
+        self.selection_stats_label.setText(f"Selected: {count} episodes ({format_size(total_bytes)})")
 
     # =========================================================================
     # Download Execution
@@ -766,7 +963,6 @@ class PodcastStudioGUI(QMainWindow):
         if self.is_download_running:
             return
 
-        # Collect selected episodes
         selected_items = []
         for r in range(self.ep_table.rowCount()):
             item = self.ep_table.item(r, 0)
@@ -779,7 +975,6 @@ class PodcastStudioGUI(QMainWindow):
             QMessageBox.warning(self, "No Episodes Selected", "Please select at least one episode using the checkboxes.")
             return
 
-        # Target Series Folder
         active_series = self.dl_series_combo.currentData()
         series_clean = sanitize_filename(
             active_series.lstrip("#") if active_series and active_series != "ALL" else (self.downloader.channel_title if self.downloader else "podcasts"),
@@ -807,9 +1002,8 @@ class PodcastStudioGUI(QMainWindow):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                dl = self.downloader or PodcastDownloader(self.cfg)
-                if not dl.client.is_connected():
-                    loop.run_until_complete(dl.connect())
+                if not self.downloader.client.is_connected():
+                    loop.run_until_complete(self.downloader.connect())
 
                 for idx, ep_item in enumerate(selected_items, 1):
                     if self.cancel_download:
@@ -829,10 +1023,9 @@ class PodcastStudioGUI(QMainWindow):
                         txt = f"{pct}% | {format_size(cur)}/{format_size(tot)} | {format_size(int(spd))}/s"
                         self.dl_signals.file_progress.emit(cur, tot, txt)
 
-                    loop.run_until_complete(dl.download_episode(ep_item, series_dir, on_progress=prog))
+                    loop.run_until_complete(self.downloader.download_episode(ep_item, series_dir, on_progress=prog))
 
-                # Rebuild catalog for series
-                series_display_title = active_series if active_series and active_series != "ALL" else dl.channel_title
+                series_display_title = active_series if active_series and active_series != "ALL" else self.downloader.channel_title
                 build_channel_catalog(series_dir, channel_title=series_display_title)
                 self.dl_signals.download_all_finished.emit(True, f"Finished downloading episodes to '{series_dir.name}'!")
             except Exception as e:
@@ -870,9 +1063,7 @@ class PodcastStudioGUI(QMainWindow):
                 "Download Complete",
                 f"{msg}\n\n• Audio files saved & ID3 tagged\n• Catalog & RSS feed updated\n• Now visible in 'Podcast Library & Studio' tab!"
             )
-            # Refresh Downloader Table status
             self.on_dl_series_changed(self.dl_series_combo.currentIndex())
-            # Refresh Library Tab
             self.load_library_series_list()
         else:
             self.log_dl(f"❌ Error during download: {msg}")
@@ -898,7 +1089,7 @@ class PodcastStudioGUI(QMainWindow):
             self.load_episodes_for_series(Path(self.lib_series_combo.currentData()))
         else:
             self.lib_episode_list.clear()
-            self.lib_count_label.setText("No downloaded series found yet in podcasts/.")
+            self.lib_stats_label.setText("No downloaded series found yet in podcasts/.")
 
     def on_library_series_selected(self, index: int):
         data = self.lib_series_combo.currentData()
@@ -914,6 +1105,9 @@ class PodcastStudioGUI(QMainWindow):
             return
 
         loaded_data = []
+        total_duration_sec = 0
+        total_size_bytes = 0
+
         for folder in episodes_dir.iterdir():
             if folder.is_dir():
                 info_json = folder / "info.json"
@@ -923,6 +1117,8 @@ class PodcastStudioGUI(QMainWindow):
                             data = json.load(f)
                             data["_folder_path"] = folder
                             loaded_data.append(data)
+                            total_duration_sec += data.get("duration_seconds", 0)
+                            total_size_bytes += data.get("file_size_bytes", 0)
                     except Exception:
                         pass
                 else:
@@ -942,7 +1138,9 @@ class PodcastStudioGUI(QMainWindow):
         self.current_library_episodes = loaded_data
 
         self.populate_library_list(self.current_library_episodes)
-        self.lib_count_label.setText(f"Episodes: {len(self.current_library_episodes)}")
+        self.lib_stats_label.setText(
+            f"Episodes: {len(self.current_library_episodes)}  |  Total Duration: {format_duration(total_duration_sec)}  |  Total Size: {format_size(total_size_bytes)}"
+        )
 
         if self.current_library_episodes:
             self.lib_episode_list.setCurrentRow(0)
@@ -1009,12 +1207,19 @@ class PodcastStudioGUI(QMainWindow):
         if image_path and image_path.exists():
             pixmap = QPixmap(str(image_path))
             if not pixmap.isNull():
-                scaled = pixmap.scaled(180, 180, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                scaled = pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self.cover_label.setPixmap(scaled)
                 self.cover_label.setText("")
                 return
         self.cover_label.setPixmap(QPixmap())
-        self.cover_label.setText("No Cover Image")
+        self.cover_label.setText("Drop Image Here\nor Click 'Change'")
+
+    def on_cover_file_dropped(self, file_path: str):
+        p = Path(file_path)
+        if p.exists():
+            self.pending_new_cover_path = p
+            self.display_cover(p)
+            self.statusBar().showMessage(f"Thumbnail dropped: {p.name} (Click 'Save Changes' to apply).")
 
     def browse_new_cover(self):
         if self.selected_lib_index < 0:
@@ -1025,7 +1230,7 @@ class PodcastStudioGUI(QMainWindow):
             self,
             "Select New Cover Image",
             "",
-            "Image Files (*.jpg *.jpeg *.png *.webp)"
+            "Image Files (*.jpg *.jpeg *.png *.webp *.bmp)"
         )
         if file_path:
             p = Path(file_path)
