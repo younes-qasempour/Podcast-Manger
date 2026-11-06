@@ -23,6 +23,7 @@ from utils import (
     format_size
 )
 from metadata_manager import EpisodeMetadata, embed_id3_tags, build_channel_catalog
+import fast_telethon
 
 
 def render_progress_bar(current: int, total: int, start_time: float, prefix: str = "Downloading"):
@@ -322,12 +323,31 @@ class PodcastDownloader:
                     else:
                         render_progress_bar(cur, tot, start_time, prefix="Audio")
 
-                print(f"   Downloading audio file ({format_size(metadata.file_size)})...")
-                await self.client.download_media(
-                    message,
-                    file=str(audio_path),
-                    progress_callback=prog
-                )
+                doc = getattr(message.media, "document", None)
+                if doc:
+                    print(f"   Downloading audio file with Fast Multi-Connection Engine ({format_size(metadata.file_size)})...")
+                    try:
+                        with open(audio_path, "wb") as f:
+                            await fast_telethon.download_file(
+                                self.client,
+                                doc,
+                                f,
+                                progress_callback=prog,
+                                is_cancelled=is_cancelled
+                            )
+                    except Exception as fast_err:
+                        print(f"   Fast engine note ({fast_err}), falling back to standard...")
+                        await self.client.download_media(
+                            message,
+                            file=str(audio_path),
+                            progress_callback=prog
+                        )
+                else:
+                    await self.client.download_media(
+                        message,
+                        file=str(audio_path),
+                        progress_callback=prog
+                    )
                 print(f"   Download complete in {int(time.time() - start_time)}s.")
 
         # 3. Save info.md and info.json
