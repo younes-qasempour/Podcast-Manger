@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>
-    <title>چنین گفت زرتشت</title>
+    <title>#چنین_گفت_زرتشت</title>
     <description>Archived podcast series from Telegram</description>
     <link>https://github.com</link>
     <language>fa</language>
-    <itunes:author>چنین گفت زرتشت</itunes:author>
+    <itunes:author>#چنین_گفت_زرتشت</itunes:author>
     <itunes:summary>Archived podcast episodes and transcripts</itunes:summary>
     <item>
       <title>تحلیل «چنین گفت زرتشت» (۱) </title>
@@ -188,6 +188,76 @@
       <enclosure url="episodes/007 - تحلیل «چنین گفت زرتشت»(۷)/تحلیل «چنین گفت زرتشت»(۷).mp3" length="55209551" type="audio/mpeg" />
       <itunes:duration>57:30</itunes:duration>
       <itunes:episode>7</itunes:episode>
+      <itunes:author>آگرافوس</itunes:author>
+    </item>
+    <item>
+      <title>تحلیل «چنین گفت زرتشت»(۸)</title>
+      <description>گزارش و تحلیل «چنین گفت زرتشت» اثر فریدریش نیچه - علی شاهی
+
+پادکست ۸: 
+
+پیش‌گفتارِ زرتشت - بند ۴
+
+- آن که به سوی «فرا-انسان» می‌رود، چگونه می‌اندیشد و عمل می‌کند؟
+- عبور کردن از «خود» یعنی چه؟ 
+
+#چنین_گفت_زرتشت ۸
+
+می‌توانید این پادکست‌ها را اینجا دنبال کنید.
+
+برای حمایت از این پادکست‌ها نگاهی به اینجا بیندازید.
+
+@agrafoss</description>
+      <pubDate>2023-07-25T04:28:41+00:00</pubDate>
+      <enclosure url="episodes/008 - تحلیل «چنین گفت زرتشت»(۸)/تحلیل «چنین گفت زرتشت»(۸).mp3" length="69701868" type="audio/mpeg" />
+      <itunes:duration>01:12:36</itunes:duration>
+      <itunes:episode>8</itunes:episode>
+      <itunes:author>آگرافوس</itunes:author>
+    </item>
+    <item>
+      <title>تحلیل «چنین گفت زرتشت»(۹)</title>
+      <description>گزارش و تحلیل «چنین گفت زرتشت» اثر فریدریش نیچه - علی شاهی
+
+پادکست ۹: 
+
+پیش‌گفتارِ زرتشت - بند ۴
+
+- دانش «معطوف به فرا-انسان» چیست و چرا باید جایگزین دانش انسانی شود؟ 
+
+#چنین_گفت_زرتشت ۹
+
+می‌توانید این پادکست‌ها را اینجا دنبال کنید.
+
+برای حمایت از این پادکست‌ها نگاهی به اینجا بیندازید.
+
+@agrafoss</description>
+      <pubDate>2023-07-28T04:15:06+00:00</pubDate>
+      <enclosure url="episodes/009 - تحلیل «چنین گفت زرتشت»(۹)/تحلیل «چنین گفت زرتشت»(۹).mp3" length="69188196" type="audio/mpeg" />
+      <itunes:duration>01:12:04</itunes:duration>
+      <itunes:episode>9</itunes:episode>
+      <itunes:author>آگرافوس</itunes:author>
+    </item>
+    <item>
+      <title>تحلیل «چنین گفت زرتشت»(۱۰)</title>
+      <description>گزارش و تحلیل «چنین گفت زرتشت» اثر فریدریش نیچه - علی شاهی
+
+پادکست ۱۰: 
+
+پیش‌گفتارِ زرتشت - بند ۵
+
+- «واپسین انسان» چیست و خطر آن در کجاست؟
+
+#چنین_گفت_زرتشت ۱۰
+
+می‌توانید این پادکست‌ها را اینجا دنبال کنید.
+
+برای حمایت از این پادکست‌ها نگاهی به اینجا بیندازید.
+
+@agrafoss</description>
+      <pubDate>2023-08-02T11:42:01+00:00</pubDate>
+      <enclosure url="episodes/010 - تحلیل «چنین گفت زرتشت»(۱۰)/تحلیل «چنین گفت زرتشت»(۱۰).mp3" length="65114766" type="audio/mpeg" />
+      <itunes:duration>01:07:49</itunes:duration>
+      <itunes:episode>10</itunes:episode>
       <itunes:author>آگرافوس</itunes:author>
     </item>
   </channel>
