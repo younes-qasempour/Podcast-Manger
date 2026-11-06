@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>
-    <title>#چنین_گفت_زرتشت</title>
+    <title>چنین گفت زرتشت</title>
     <description>Archived podcast series from Telegram</description>
     <link>https://github.com</link>
     <language>fa</language>
-    <itunes:author>#چنین_گفت_زرتشت</itunes:author>
+    <itunes:author>چنین گفت زرتشت</itunes:author>
     <itunes:summary>Archived podcast episodes and transcripts</itunes:summary>
     <item>
       <title>تحلیل «چنین گفت زرتشت» (۱) </title>
@@ -258,6 +258,29 @@
       <enclosure url="episodes/010 - تحلیل «چنین گفت زرتشت»(۱۰)/تحلیل «چنین گفت زرتشت»(۱۰).mp3" length="65114766" type="audio/mpeg" />
       <itunes:duration>01:07:49</itunes:duration>
       <itunes:episode>10</itunes:episode>
+      <itunes:author>آگرافوس</itunes:author>
+    </item>
+    <item>
+      <title>تحلیل «چنین گفت زرتشت»(۱۱)</title>
+      <description>گزارش و تحلیل «چنین گفت زرتشت» اثر فریدریش نیچه - علی شاهی
+
+پادکست ۱۱: 
+
+پیش‌گفتارِ زرتشت - بند ۵
+
+- زرتشت چگونه سخن می‌گوید و چرا؟ : تحلیل تکنیکی و ادبی نوشتار نیچه در پیشگفتار
+
+#چنین_گفت_زرتشت ۱۱
+
+می‌توانید این پادکست‌ها را اینجا دنبال کنید.
+
+برای حمایت از این پادکست‌ها نگاهی به اینجا بیندازید.
+
+@agrafoss</description>
+      <pubDate>2023-08-04T10:52:42+00:00</pubDate>
+      <enclosure url="episodes/011 - تحلیل «چنین گفت زرتشت»(۱۱)/تحلیل «چنین گفت زرتشت»(۱۱).mp3" length="65116020" type="audio/mpeg" />
+      <itunes:duration>01:07:49</itunes:duration>
+      <itunes:episode>11</itunes:episode>
       <itunes:author>آگرافوس</itunes:author>
     </item>
   </channel>

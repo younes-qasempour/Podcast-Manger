@@ -308,7 +308,12 @@ class PodcastDownloader:
             except Exception as e:
                 print(f"   Thumbnail note: {e}")
 
-        # 2. Download Audio
+        # 2. Save info.md and info.json (Immediate metadata & notes record)
+        cover_filename = cover_path.name if cover_path.exists() else None
+        metadata.save_info(ep_folder, cover_filename=cover_filename)
+        print(f"   Saved notes & metadata: info.md & info.json")
+
+        # 3. Download Audio
         if self.config.download_audio:
             if audio_path.exists() and audio_path.stat().st_size == metadata.file_size:
                 print(f"   Audio already downloaded ({format_size(audio_path.stat().st_size)}), skipping download.")
@@ -349,11 +354,6 @@ class PodcastDownloader:
                         progress_callback=prog
                     )
                 print(f"   Download complete in {int(time.time() - start_time)}s.")
-
-        # 3. Save info.md and info.json
-        cover_filename = cover_path.name if cover_path.exists() else None
-        metadata.save_info(ep_folder, cover_filename=cover_filename)
-        print(f"   Saved notes & metadata: info.md & info.json")
 
         # 4. Embed ID3 Tags into MP3
         if self.config.embed_metadata and audio_path.exists() and audio_path.suffix.lower() == ".mp3":

@@ -2,6 +2,10 @@
 Telethon>=1.36.0
 cryptg>=0.4.0
 
+# Desktop GUI Studio & QR Code
+PyQt6>=6.4.0
+qrcode>=7.4.0
+
 # Audio ID3 Tagging & Metadata Embedding
 mutagen>=1.47.0
 

@@ -1,19 +1,36 @@
 # Sensitive Telegram Credentials & Sessions
 .env
-*.session
-*.session-journal
+*.env
+*.session*
+tg_podcast_session.session*
+test*.session*
 
-# Python artifacts
+# Python & Environment artifacts
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 .pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+venv/
+.venv/
+env/
 
-# IDE & OS files
+# IDE, Editor & OS files
 .vscode/
 .idea/
 Thumbs.db
 Desktop.ini
+.DS_Store
+
+# Temporary & Test artifacts
+*.tmp
+*.bin
+test_sample.*
 
 # Audio files (kept locally to avoid GitHub 100MB per-file upload limit)
 *.mp3
@@ -21,3 +38,11 @@ Desktop.ini
 *.ogg
 *.wav
 *.flac
+*.aac
+*.opus
+podcasts/**/audio.*
+podcasts/**/*.mp3
+podcasts/**/*.m4a
+
+# Telegram Desktop Raw Exports
+ChatExport_*/
