@@ -155,10 +155,12 @@ class PodcastDownloader:
             raise ValueError("Target channel is not specified in settings or input.")
 
         self.config.target_channel = target
-        # Clean target if it's a URL (e.g. https://t.me/agrafoss)
-        cleaned_target = target.strip()
+        # Clean target if it's a URL (e.g. https://t.me/agrafoss or https://t.me/s/agrafoss)
+        cleaned_target = target.strip().rstrip("/")
         if "t.me/" in cleaned_target:
-            cleaned_target = cleaned_target.split("t.me/")[-1].split("/")[0]
+            parts = [p for p in cleaned_target.split("t.me/")[-1].split("/") if p and p != "s"]
+            if parts:
+                cleaned_target = parts[0]
 
         try:
             self.channel_entity = await self.client.get_entity(cleaned_target)
@@ -232,15 +234,21 @@ class PodcastDownloader:
             "caption": caption
         }
 
-    async def scan_podcasts(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def scan_podcasts(
+        self,
+        limit: Optional[int] = None,
+        on_progress: Optional[Callable[[int, int], None]] = None
+    ) -> List[Dict[str, Any]]:
         """Scans the channel for audio podcast messages."""
         if not self.channel_entity:
             await self.resolve_channel()
 
         print(f"Scanning messages in '{self.channel_title}'...")
         podcasts = []
+        total_scanned = 0
 
         async for message in self.client.iter_messages(self.channel_entity, limit=limit):
+            total_scanned += 1
             if self.is_audio_message(message):
                 details = self.extract_audio_details(message, self.channel_title)
                 ep_num = extract_episode_number(details["caption"], details["title"])
@@ -262,6 +270,10 @@ class PodcastDownloader:
                     "message": message,
                     "metadata": meta
                 })
+                if on_progress:
+                    on_progress(total_scanned, len(podcasts))
+            elif on_progress and total_scanned % 50 == 0:
+                on_progress(total_scanned, len(podcasts))
 
         # Reverse so older episodes come first chronologically (or sorted by ep number)
         podcasts.reverse()

@@ -1,5 +1,6 @@
 import sys
 import os
+import io
 import re
 import json
 import time
@@ -92,6 +93,7 @@ class TelegramBridge:
     """
     def __init__(self, config: Config):
         self.config = config
+        self._lock = threading.Lock()
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._run_loop, daemon=True, name="TelethonBridgeThread")
         self.thread.start()
@@ -109,8 +111,9 @@ class TelegramBridge:
 
     def reload_downloader(self):
         """Re-creates PodcastDownloader with updated config."""
-        fut = asyncio.run_coroutine_threadsafe(self._init_downloader(), self.loop)
-        self.downloader = fut.result()
+        with self._lock:
+            fut = asyncio.run_coroutine_threadsafe(self._init_downloader(), self.loop)
+            self.downloader = fut.result()
 
     def is_connected(self) -> bool:
         """Synchronously returns whether Telethon is currently connected."""
@@ -118,15 +121,17 @@ class TelegramBridge:
 
     def ensure_connected(self):
         """Ensures the Telegram client is connected."""
-        if not self.downloader or not self.downloader.client:
-            self.reload_downloader()
-        if not self.is_connected():
-            self.run_coro(self.downloader.client.connect())
+        with self._lock:
+            if not self.downloader or not self.downloader.client:
+                fut = asyncio.run_coroutine_threadsafe(self._init_downloader(), self.loop)
+                self.downloader = fut.result()
+            if not self.is_connected():
+                self.run_coro(self.downloader.client.connect())
 
     def run_coro(self, coro):
-        """Runs a coroutine on the Telethon event loop and blocks calling thread until result."""
+        """Runs an awaitable on the Telethon event loop and blocks calling thread until result."""
         import inspect
-        if not inspect.iscoroutine(coro):
+        if not inspect.isawaitable(coro):
             return coro
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         return future.result()
@@ -135,12 +140,27 @@ class TelegramBridge:
         """Submits a coroutine to the Telethon event loop without blocking."""
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
+    def check_authorization(self) -> tuple[bool, str]:
+        """Thread-safe check returning (is_authorized, user_display_name)."""
+        self.ensure_connected()
+        is_auth = self.run_coro(self.downloader.client.is_user_authorized())
+        if is_auth:
+            me = self.run_coro(self.downloader.client.get_me())
+            name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+            return True, name.strip() or "User"
+        return False, ""
+
 
 # =============================================================================
 # Telegram In-App Login Dialog (Instant QR Code + Phone Number)
 # =============================================================================
 class TelegramLoginDialog(QDialog):
     loginSuccessful = pyqtSignal(str)
+    qrGenerated = pyqtSignal(bytes)
+    qrStatusChanged = pyqtSignal(str, str)
+    qrPasswordNeeded = pyqtSignal()
+    phoneCodeSent = pyqtSignal()
+    phoneError = pyqtSignal(str)
 
     def __init__(self, bridge: TelegramBridge, parent=None):
         super().__init__(parent)
@@ -148,10 +168,11 @@ class TelegramLoginDialog(QDialog):
         self.cfg = bridge.config
         self.downloader = bridge.downloader
         self.phone_code_hash = None
-        self.is_qr_active = False
+        self.qr_task_id = 0
+        self.is_closed = False
 
         self.setWindowTitle("🔑 Log In to Telegram")
-        self.resize(450, 480)
+        self.resize(460, 520)
         self.setStyleSheet("""
             QDialog { background-color: #1e1e2e; color: #cdd6f4; }
             QLabel { color: #cdd6f4; font-family: 'Segoe UI', Tahoma, sans-serif; }
@@ -190,20 +211,41 @@ class TelegramLoginDialog(QDialog):
         inst_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qr_layout.addWidget(inst_label)
 
-        self.qr_label = QLabel()
+        self.qr_label = QLabel("Connecting to Telegram...")
         self.qr_label.setFixedSize(240, 240)
         self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.qr_label.setStyleSheet("background-color: white; border-radius: 12px; padding: 8px;")
+        self.qr_label.setStyleSheet("background-color: white; color: #1e1e2e; font-weight: bold; border-radius: 12px; padding: 8px;")
         qr_layout.addWidget(self.qr_label)
 
-        self.qr_status = QLabel("Generating QR code...")
-        self.qr_status.setStyleSheet("color: #f9e2af; font-weight: bold;")
+        self.qr_status = QLabel("Connecting to Telegram...")
+        self.qr_status.setStyleSheet("color: #89b4fa; font-weight: bold;")
         self.qr_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qr_layout.addWidget(self.qr_status)
 
-        refresh_qr_btn = QPushButton("🔄 Refresh QR Code")
-        refresh_qr_btn.clicked.connect(self.start_qr_login)
-        qr_layout.addWidget(refresh_qr_btn)
+        # 2FA Password container (Hidden unless 2FA is needed)
+        self.pwd_container = QWidget()
+        pwd_layout = QVBoxLayout(self.pwd_container)
+        pwd_layout.setContentsMargins(0, 0, 0, 0)
+        pwd_layout.setSpacing(6)
+        pwd_lbl = QLabel("🔐 <b>2FA Password:</b> Enter your Telegram Cloud Password:")
+        pwd_lbl.setStyleSheet("color: #fab387; font-size: 12px;")
+        pwd_layout.addWidget(pwd_lbl)
+        pwd_row = QHBoxLayout()
+        self.qr_pwd_input = QLineEdit()
+        self.qr_pwd_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.qr_pwd_input.setPlaceholderText("Telegram Cloud Password")
+        self.qr_pwd_input.returnPressed.connect(self._submit_qr_password)
+        pwd_row.addWidget(self.qr_pwd_input)
+        self.qr_pwd_submit_btn = QPushButton("Submit 2FA")
+        self.qr_pwd_submit_btn.clicked.connect(self._submit_qr_password)
+        pwd_row.addWidget(self.qr_pwd_submit_btn)
+        pwd_layout.addLayout(pwd_row)
+        self.pwd_container.setVisible(False)
+        qr_layout.addWidget(self.pwd_container)
+
+        self.refresh_qr_btn = QPushButton("🔄 Refresh QR Code")
+        self.refresh_qr_btn.clicked.connect(self.start_qr_login)
+        qr_layout.addWidget(self.refresh_qr_btn)
 
         self.tab_widget.addTab(qr_tab, "📲 Scan QR Code")
 
@@ -239,42 +281,125 @@ class TelegramLoginDialog(QDialog):
         phone_layout.addStretch()
         self.tab_widget.addTab(phone_tab, "📱 Phone Number")
 
+        # Connect signals
+        self.qrGenerated.connect(self._on_qr_generated)
+        self.qrStatusChanged.connect(self._on_qr_status_changed)
+        self.qrPasswordNeeded.connect(self._on_qr_password_needed)
+        self.phoneCodeSent.connect(self._on_phone_code_sent)
+        self.phoneError.connect(self._on_phone_error)
+
         self.tab_widget.setCurrentIndex(0)
-        QTimer.singleShot(150, self.start_qr_login)
+        QTimer.singleShot(100, self.start_qr_login)
+
+    def closeEvent(self, event):
+        self.is_closed = True
+        self.qr_task_id += 1
+        super().closeEvent(event)
+
+    def reject(self):
+        self.is_closed = True
+        self.qr_task_id += 1
+        super().reject()
 
     def start_qr_login(self):
-        self.is_qr_active = True
+        self.qr_task_id += 1
+        current_id = self.qr_task_id
+        self.is_closed = False
+        self.pwd_container.setVisible(False)
+        self.refresh_qr_btn.setEnabled(False)
         self.qr_status.setText("Connecting to Telegram...")
-        threading.Thread(target=self._qr_worker, daemon=True).start()
-        threading.Thread(target=self._qr_worker, daemon=True).start()
+        self.qr_status.setStyleSheet("color: #89b4fa; font-weight: bold;")
+        self.qr_label.setText("Generating QR code...")
+        self.qr_label.setStyleSheet("background-color: white; color: #1e1e2e; font-weight: bold; border-radius: 12px; font-size: 13px;")
 
-    def _qr_worker(self):
+        threading.Thread(target=self._qr_worker, args=(current_id,), daemon=True).start()
+
+    def _qr_worker(self, task_id: int):
         try:
             self.bridge.ensure_connected()
+            if self.is_closed or task_id != self.qr_task_id:
+                return
+
+            # Check if user is already authorized
+            if self.bridge.run_coro(self.downloader.client.is_user_authorized()):
+                me = self.bridge.run_coro(self.downloader.client.get_me())
+                user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+                QTimer.singleShot(0, lambda: self._on_login_success(user_name))
+                return
+
+            self.qrStatusChanged.emit("Requesting QR code from Telegram...", "#89b4fa")
             qr_login = self.bridge.run_coro(self.downloader.client.qr_login())
-            
-            # Generate QPixmap from QR
+            if self.is_closed or task_id != self.qr_task_id:
+                return
+
+            # Render QR to in-memory PNG bytes
             qr = qrcode.QRCode(box_size=6, border=2)
             qr.add_data(qr_login.url)
-            img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
-            qimg = ImageQt(img)
-            pix = QPixmap.fromImage(qimg)
+            img = qr.make_image(fill_color="black", back_color="white")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            png_bytes = buf.getvalue()
 
-            # Update UI on main thread
-            QTimer.singleShot(0, lambda: self._show_qr(pix))
+            self.qrGenerated.emit(png_bytes)
+            self.qrStatusChanged.emit("Waiting for scan on Telegram mobile app...", "#a6e3a1")
 
-            # Wait for scan
-            self.bridge.run_coro(qr_login.wait(timeout=90))
-            me = self.bridge.run_coro(self.downloader.client.get_me())
-            user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+            # Wait for user scan (up to 120s)
+            user = self.bridge.run_coro(qr_login.wait(timeout=120))
+            if self.is_closed or task_id != self.qr_task_id:
+                return
+
+            user_name = (user.first_name or "") + (f" {user.last_name}" if user.last_name else "")
             QTimer.singleShot(0, lambda: self._on_login_success(user_name))
 
+        except SessionPasswordNeededError:
+            if not self.is_closed and task_id == self.qr_task_id:
+                self.qrPasswordNeeded.emit()
+        except asyncio.TimeoutError:
+            if not self.is_closed and task_id == self.qr_task_id:
+                self.qrStatusChanged.emit("QR code expired. Click 'Refresh QR Code'.", "#f38ba8")
         except Exception as e:
-            QTimer.singleShot(0, lambda: self.qr_status.setText(f"QR Error: {e}"))
+            if not self.is_closed and task_id == self.qr_task_id:
+                self.qrStatusChanged.emit(f"QR Error: {e}", "#f38ba8")
+        finally:
+            if task_id == self.qr_task_id:
+                QTimer.singleShot(0, lambda: self.refresh_qr_btn.setEnabled(True))
 
-    def _show_qr(self, pix: QPixmap):
-        self.qr_label.setPixmap(pix.scaled(220, 220, Qt.AspectRatioMode.KeepAspectRatio))
-        self.qr_status.setText("Waiting for scan on mobile Telegram...")
+    def _on_qr_generated(self, png_bytes: bytes):
+        pix = QPixmap()
+        pix.loadFromData(png_bytes)
+        if not pix.isNull():
+            self.qr_label.setPixmap(pix.scaled(220, 220, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def _on_qr_status_changed(self, text: str, color: str):
+        self.qr_status.setText(text)
+        self.qr_status.setStyleSheet(f"color: {color}; font-weight: bold;")
+
+    def _on_qr_password_needed(self):
+        self.pwd_container.setVisible(True)
+        self.qr_pwd_input.setFocus()
+        self.qr_status.setText("🔐 Two-Step Verification active. Enter 2FA Password:")
+        self.qr_status.setStyleSheet("color: #fab387; font-weight: bold;")
+
+    def _submit_qr_password(self):
+        pwd = self.qr_pwd_input.text().strip()
+        if not pwd:
+            return
+        self.qr_pwd_submit_btn.setEnabled(False)
+        self.qr_status.setText("Verifying 2FA password...")
+        self.qr_status.setStyleSheet("color: #89b4fa; font-weight: bold;")
+
+        def pwd_worker():
+            try:
+                self.bridge.run_coro(self.downloader.client.sign_in(password=pwd))
+                me = self.bridge.run_coro(self.downloader.client.get_me())
+                user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+                QTimer.singleShot(0, lambda: self._on_login_success(user_name))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self.qr_status.setText(f"2FA Error: {e}"))
+                QTimer.singleShot(0, lambda: self.qr_status.setStyleSheet("color: #f38ba8; font-weight: bold;"))
+                QTimer.singleShot(0, lambda: self.qr_pwd_submit_btn.setEnabled(True))
+
+        threading.Thread(target=pwd_worker, daemon=True).start()
 
     def _on_login_success(self, user_name: str):
         self.loginSuccessful.emit(user_name)
@@ -282,11 +407,6 @@ class TelegramLoginDialog(QDialog):
         self.accept()
 
     def send_phone_code(self):
-        if not self.cfg.is_configured():
-            QMessageBox.warning(self, "API Keys Required", "Please enter your API ID and Hash in the 'API Credentials' tab first.")
-            self.tab_widget.setCurrentIndex(0)
-            return
-
         phone = self.phone_input.text().strip()
         if not phone:
             QMessageBox.warning(self, "Phone Required", "Please enter your phone number.")
@@ -301,14 +421,21 @@ class TelegramLoginDialog(QDialog):
                 res = self.bridge.run_coro(self.downloader.client.send_code_request(phone))
                 self.phone_code_hash = res.phone_code_hash
                 self.cfg.update(TG_PHONE=phone)
-                QTimer.singleShot(0, lambda: QMessageBox.information(self, "Code Sent", "Verification code sent to your Telegram app!"))
+                self.phoneCodeSent.emit()
             except Exception as e:
-                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", str(e)))
-            finally:
-                QTimer.singleShot(0, lambda: self.send_code_btn.setText("📨 Send Verification Code"))
-                QTimer.singleShot(0, lambda: self.send_code_btn.setEnabled(True))
+                self.phoneError.emit(str(e))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_phone_code_sent(self):
+        self.send_code_btn.setText("📨 Send Verification Code")
+        self.send_code_btn.setEnabled(True)
+        QMessageBox.information(self, "Code Sent", "Verification code sent to your Telegram app!")
+
+    def _on_phone_error(self, err: str):
+        self.send_code_btn.setText("📨 Send Verification Code")
+        self.send_code_btn.setEnabled(True)
+        QMessageBox.critical(self, "Phone Error", f"Could not send code: {err}")
 
     def verify_code(self):
         phone = self.phone_input.text().strip()
@@ -319,6 +446,8 @@ class TelegramLoginDialog(QDialog):
             QMessageBox.warning(self, "Input Required", "Please enter both phone and verification code.")
             return
 
+        self.verify_btn.setEnabled(False)
+
         def worker():
             try:
                 try:
@@ -328,6 +457,7 @@ class TelegramLoginDialog(QDialog):
                 except SessionPasswordNeededError:
                     if not pwd:
                         QTimer.singleShot(0, lambda: QMessageBox.warning(self, "2FA Password Required", "Your account has Two-Step Verification enabled. Please enter your password above."))
+                        QTimer.singleShot(0, lambda: self.verify_btn.setEnabled(True))
                         return
                     self.bridge.run_coro(self.downloader.client.sign_in(password=pwd))
 
@@ -336,6 +466,8 @@ class TelegramLoginDialog(QDialog):
                 QTimer.singleShot(0, lambda: self._on_login_success(user_name))
             except Exception as e:
                 QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Login Error", str(e)))
+            finally:
+                QTimer.singleShot(0, lambda: self.verify_btn.setEnabled(True))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -349,12 +481,15 @@ class DownloaderSignals(QObject):
     overall_progress = pyqtSignal(int, int)
     file_progress = pyqtSignal(int, int, str)
     download_all_finished = pyqtSignal(bool, str)
+    login_required = pyqtSignal()
 
 
 # =============================================================================
 # Main GUI Window
 # =============================================================================
 class PodcastStudioGUI(QMainWindow):
+    authStatusChecked = pyqtSignal(bool, str)
+
     def __init__(self):
         super().__init__()
         self.cfg = Config()
@@ -373,6 +508,7 @@ class PodcastStudioGUI(QMainWindow):
         self.cancel_download = False
         self.user_display_name = "Not Logged In"
 
+        self.authStatusChecked.connect(self._on_auth_status_checked)
         self.init_ui()
         self.check_auth_status_async()
         self.load_library_series_list()
@@ -471,22 +607,21 @@ class PodcastStudioGUI(QMainWindow):
     def check_auth_status_async(self):
         def worker():
             try:
-                self.bridge.ensure_connected()
-                authorized = self.bridge.run_coro(self.downloader.client.is_user_authorized())
-                if authorized:
-                    me = self.bridge.run_coro(self.downloader.client.get_me())
-                    user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
-                    self.user_display_name = user_name
-                    QTimer.singleShot(0, lambda: self.account_status_label.setText(f"🟢 Connected as: {user_name}"))
-                    QTimer.singleShot(0, lambda: self.account_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold; margin-right: 8px;"))
-                else:
-                    QTimer.singleShot(0, lambda: self.account_status_label.setText("🔴 Not Logged In"))
-                    QTimer.singleShot(0, lambda: self.account_status_label.setStyleSheet("color: #f38ba8; font-weight: bold; margin-right: 8px;"))
-            except Exception as e:
-                QTimer.singleShot(0, lambda: self.account_status_label.setText("⚪ Disconnected"))
-                QTimer.singleShot(0, lambda: self.account_status_label.setStyleSheet("color: #a6adc8; font-weight: bold; margin-right: 8px;"))
+                is_auth, user_name = self.bridge.check_authorization()
+                self.authStatusChecked.emit(is_auth, user_name)
+            except Exception:
+                self.authStatusChecked.emit(False, "")
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_auth_status_checked(self, is_auth: bool, user_name: str):
+        if is_auth:
+            self.user_display_name = user_name
+            self.account_status_label.setText(f"🟢 Connected as: {user_name}")
+            self.account_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold; margin-right: 8px;")
+        else:
+            self.account_status_label.setText("🔴 Not Logged In")
+            self.account_status_label.setStyleSheet("color: #f38ba8; font-weight: bold; margin-right: 8px;")
 
     def open_login_dialog(self):
         dlg = TelegramLoginDialog(self.bridge, self)
@@ -497,6 +632,9 @@ class PodcastStudioGUI(QMainWindow):
         self.user_display_name = user_name
         self.account_status_label.setText(f"🟢 Connected as: {user_name}")
         self.account_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold; margin-right: 8px;")
+        self.log_dl(f"✅ Successfully logged in as {user_name}!")
+        if not self.scanned_podcasts and self.dl_channel_input.text().strip():
+            QTimer.singleShot(400, self.start_channel_scan)
 
     # =========================================================================
     # TAB 1: Library & Studio (Explorer, Info Editor, Thumbnail Customizer)
@@ -852,6 +990,7 @@ class PodcastStudioGUI(QMainWindow):
 
         self.dl_signals = DownloaderSignals()
         self.dl_signals.log.connect(self.log_dl)
+        self.dl_signals.login_required.connect(self.open_login_dialog)
         self.dl_signals.scan_finished.connect(self.on_channel_scanned)
 
         def worker():
@@ -860,12 +999,15 @@ class PodcastStudioGUI(QMainWindow):
                 authorized = self.bridge.run_coro(self.downloader.client.is_user_authorized())
                 if not authorized:
                     self.dl_signals.log.emit("🔑 Telegram login required. Please scan the QR code to connect.")
-                    QTimer.singleShot(0, self.open_login_dialog)
+                    self.dl_signals.login_required.emit()
                     self.dl_signals.scan_finished.emit([], {}, "")
                     return
 
+                def on_scan_progress(scanned, found):
+                    self.dl_signals.log.emit(f"Scanning channel: checked {scanned} messages, found {found} audio episodes...")
+
                 self.bridge.run_coro(self.downloader.resolve_channel(target))
-                podcasts = self.bridge.run_coro(self.downloader.scan_podcasts())
+                podcasts = self.bridge.run_coro(self.downloader.scan_podcasts(on_progress=on_scan_progress))
 
                 # Group by hashtags / series
                 series_map: Dict[str, List[Dict[str, Any]]] = {}
