@@ -247,39 +247,47 @@ class TelegramLoginDialog(QDialog):
         self.refresh_qr_btn.clicked.connect(self.start_qr_login)
         qr_layout.addWidget(self.refresh_qr_btn)
 
-        terminal_btn = QPushButton("💻 Open Simple Terminal Login")
-        terminal_btn.setStyleSheet("background-color: #313244; color: #89b4fa; border: 1px solid #45475a; padding: 7px;")
-        terminal_btn.clicked.connect(self._launch_terminal_login)
-        qr_layout.addWidget(terminal_btn)
-
         self.tab_widget.addTab(qr_tab, "📲 Scan QR Code")
 
         # TAB 2: Phone Number + Code
         phone_tab = QWidget()
         phone_layout = QVBoxLayout(phone_tab)
         phone_layout.setSpacing(10)
+        phone_layout.setContentsMargins(12, 12, 12, 12)
 
-        phone_layout.addWidget(QLabel("Phone Number (International format, e.g. +98912...):"))
+        phone_info = QLabel("Log in by receiving a 5-digit verification code inside your Telegram app:")
+        phone_info.setStyleSheet("color: #a6adc8; font-size: 12px; margin-bottom: 4px;")
+        phone_layout.addWidget(phone_info)
+
+        phone_layout.addWidget(QLabel("<b>1. Phone Number</b> (e.g. +989123456789):"))
+        phone_row = QHBoxLayout()
         self.phone_input = QLineEdit(self.cfg.phone)
         self.phone_input.setPlaceholderText("+989123456789")
-        phone_layout.addWidget(self.phone_input)
+        phone_row.addWidget(self.phone_input)
 
-        self.send_code_btn = QPushButton("📨 Send Verification Code")
+        self.send_code_btn = QPushButton("📨 Send Code")
         self.send_code_btn.clicked.connect(self.send_phone_code)
-        phone_layout.addWidget(self.send_code_btn)
+        phone_row.addWidget(self.send_code_btn)
+        phone_layout.addLayout(phone_row)
 
-        phone_layout.addSpacing(10)
-        phone_layout.addWidget(QLabel("Verification Code (sent to your Telegram app):"))
+        self.phone_status_lbl = QLabel("Enter phone number and click 'Send Code'.")
+        self.phone_status_lbl.setStyleSheet("color: #89b4fa; font-size: 11px;")
+        phone_layout.addWidget(self.phone_status_lbl)
+
+        phone_layout.addSpacing(6)
+        phone_layout.addWidget(QLabel("<b>2. Verification Code:</b>"))
         self.code_input = QLineEdit()
         self.code_input.setPlaceholderText("12345")
         phone_layout.addWidget(self.code_input)
 
-        phone_layout.addWidget(QLabel("2FA Password (if enabled on your account):"))
+        phone_layout.addWidget(QLabel("<b>3. Two-Step Password</b> (only if 2FA active on account):"))
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setPlaceholderText("Optional Cloud Password")
         phone_layout.addWidget(self.password_input)
 
-        self.verify_btn = QPushButton("✅ Verify & Log In")
+        self.verify_btn = QPushButton("✅ Log In with Code")
+        self.verify_btn.setStyleSheet("background-color: #a6e3a1; color: #11111b; font-weight: bold; padding: 10px;")
         self.verify_btn.clicked.connect(self.verify_code)
         phone_layout.addWidget(self.verify_btn)
 
@@ -293,16 +301,18 @@ class TelegramLoginDialog(QDialog):
         self.phoneCodeSent.connect(self._on_phone_code_sent)
         self.phoneError.connect(self._on_phone_error)
 
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
         self.tab_widget.setCurrentIndex(0)
         QTimer.singleShot(100, self.start_qr_login)
 
-    def _launch_terminal_login(self):
-        import subprocess
-        self.is_closed = True
+    def on_tab_changed(self, index: int):
+        # Cancel active QR worker when switching away from QR tab to prevent MTProto collisions
         self.qr_task_id += 1
-        script_path = Path(__file__).resolve().parent / "quick_login.py"
-        subprocess.Popen(["cmd.exe", "/c", "start", "cmd.exe", "/k", sys.executable, str(script_path)])
-        self.accept()
+        if index == 0:
+            self.start_qr_login()
+        else:
+            self.phone_status_lbl.setText("Enter phone number and click 'Send Code'.")
+            self.phone_status_lbl.setStyleSheet("color: #89b4fa; font-size: 11px;")
 
     def closeEvent(self, event):
         self.is_closed = True
@@ -427,6 +437,8 @@ class TelegramLoginDialog(QDialog):
 
         self.send_code_btn.setEnabled(False)
         self.send_code_btn.setText("Sending...")
+        self.phone_status_lbl.setText("Connecting & requesting code...")
+        self.phone_status_lbl.setStyleSheet("color: #f9e2af; font-size: 11px;")
 
         def worker():
             try:
@@ -441,14 +453,19 @@ class TelegramLoginDialog(QDialog):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_phone_code_sent(self):
-        self.send_code_btn.setText("📨 Send Verification Code")
+        self.send_code_btn.setText("📨 Send Code")
         self.send_code_btn.setEnabled(True)
+        self.phone_status_lbl.setText("✅ Code sent! Check your Telegram app for the 5-digit code.")
+        self.phone_status_lbl.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 12px;")
+        self.code_input.setFocus()
         QMessageBox.information(self, "Code Sent", "Verification code sent to your Telegram app!")
 
     def _on_phone_error(self, err: str):
-        self.send_code_btn.setText("📨 Send Verification Code")
+        self.send_code_btn.setText("📨 Send Code")
         self.send_code_btn.setEnabled(True)
-        QMessageBox.critical(self, "Phone Error", f"Could not send code: {err}")
+        self.phone_status_lbl.setText(f"❌ {err}")
+        self.phone_status_lbl.setStyleSheet("color: #f38ba8; font-weight: bold; font-size: 11px;")
+        QMessageBox.critical(self, "Phone Error", f"Could not send code:\n{err}")
 
     def verify_code(self):
         phone = self.phone_input.text().strip()
@@ -460,6 +477,9 @@ class TelegramLoginDialog(QDialog):
             return
 
         self.verify_btn.setEnabled(False)
+        self.verify_btn.setText("Verifying...")
+        self.phone_status_lbl.setText("Verifying code...")
+        self.phone_status_lbl.setStyleSheet("color: #f9e2af; font-size: 11px;")
 
         def worker():
             try:
@@ -469,8 +489,12 @@ class TelegramLoginDialog(QDialog):
                     )
                 except SessionPasswordNeededError:
                     if not pwd:
-                        QTimer.singleShot(0, lambda: QMessageBox.warning(self, "2FA Password Required", "Your account has Two-Step Verification enabled. Please enter your password above."))
+                        QTimer.singleShot(0, lambda: self.phone_status_lbl.setText("🔐 Two-Step Verification enabled. Enter password above."))
+                        QTimer.singleShot(0, lambda: self.phone_status_lbl.setStyleSheet("color: #fab387; font-weight: bold; font-size: 11px;"))
+                        QTimer.singleShot(0, lambda: self.password_input.setFocus())
+                        QTimer.singleShot(0, lambda: QMessageBox.warning(self, "2FA Password Required", "Your account has Two-Step Verification enabled. Please enter your password in the 2FA Password field."))
                         QTimer.singleShot(0, lambda: self.verify_btn.setEnabled(True))
+                        QTimer.singleShot(0, lambda: self.verify_btn.setText("✅ Log In with Code"))
                         return
                     self.bridge.run_coro(self.downloader.client.sign_in(password=pwd))
 
@@ -478,9 +502,12 @@ class TelegramLoginDialog(QDialog):
                 user_name = (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
                 QTimer.singleShot(0, lambda: self._on_login_success(user_name))
             except Exception as e:
+                QTimer.singleShot(0, lambda: self.phone_status_lbl.setText(f"❌ {e}"))
+                QTimer.singleShot(0, lambda: self.phone_status_lbl.setStyleSheet("color: #f38ba8; font-weight: bold; font-size: 11px;"))
                 QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Login Error", str(e)))
             finally:
                 QTimer.singleShot(0, lambda: self.verify_btn.setEnabled(True))
+                QTimer.singleShot(0, lambda: self.verify_btn.setText("✅ Log In with Code"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -632,9 +659,13 @@ class PodcastStudioGUI(QMainWindow):
             self.user_display_name = user_name
             self.account_status_label.setText(f"🟢 Connected as: {user_name}")
             self.account_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold; margin-right: 8px;")
+            if hasattr(self, "auth_banner"):
+                self.auth_banner.setVisible(False)
         else:
             self.account_status_label.setText("🔴 Not Logged In")
             self.account_status_label.setStyleSheet("color: #f38ba8; font-weight: bold; margin-right: 8px;")
+            if hasattr(self, "auth_banner"):
+                self.auth_banner.setVisible(True)
 
     def open_login_dialog(self):
         dlg = TelegramLoginDialog(self.bridge, self)
@@ -645,6 +676,8 @@ class PodcastStudioGUI(QMainWindow):
         self.user_display_name = user_name
         self.account_status_label.setText(f"🟢 Connected as: {user_name}")
         self.account_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold; margin-right: 8px;")
+        if hasattr(self, "auth_banner"):
+            self.auth_banner.setVisible(False)
         self.log_dl(f"✅ Successfully logged in as {user_name}!")
         if not self.scanned_podcasts and self.dl_channel_input.text().strip():
             QTimer.singleShot(400, self.start_channel_scan)
@@ -812,6 +845,32 @@ class PodcastStudioGUI(QMainWindow):
         layout = QVBoxLayout(self.downloader_tab)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
+
+        # In-App Login Required Banner (shown when not logged in)
+        self.auth_banner = QFrame()
+        self.auth_banner.setStyleSheet("""
+            QFrame {
+                background-color: #2b233a;
+                border: 1px solid #fab387;
+                border-radius: 8px;
+                padding: 10px 14px;
+            }
+        """)
+        banner_layout = QHBoxLayout(self.auth_banner)
+        banner_layout.setContentsMargins(0, 0, 0, 0)
+
+        banner_text = QLabel("🔑 <b>Telegram Account Required:</b> Log in to browse & download episodes from @agrafoss.")
+        banner_text.setStyleSheet("color: #fab387; font-size: 13px;")
+        banner_layout.addWidget(banner_text)
+        banner_layout.addStretch()
+
+        banner_login_btn = QPushButton("📲 Log In (QR Code or Phone)")
+        banner_login_btn.setStyleSheet("background-color: #a6e3a1; color: #11111b; font-weight: bold; border-radius: 6px; padding: 6px 16px;")
+        banner_login_btn.clicked.connect(self.open_login_dialog)
+        banner_layout.addWidget(banner_login_btn)
+
+        self.auth_banner.setVisible(False)
+        layout.addWidget(self.auth_banner)
 
         # Connection Row
         conn_box = QGroupBox("1. Target Telegram Channel")
