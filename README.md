@@ -139,45 +139,61 @@ python main.py
 
 ## 🖥️ Desktop Studio GUI
 
-The application includes a PyQt6 desktop interface organized into three tabs:
+The application includes a PyQt6 desktop interface organized into four tabs:
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│ 🎙️ Telegram Podcast Studio & Downloader        🟢 Connected as: Younes │
-├────────────────────────────────────────────────────────────────────────┤
-│ [📚 Podcast Library & Studio] [📥 Telegram Downloader] [🐙 GitHub Sync]│
-├────────────────────────────────────────────────────────────────────────┤
-│ 1. Target Telegram Channel: [@agrafoss       ] [🔗 Scan Podcasts]     │
-│ 📚 Series: [#چنین_گفت_زرتشت (92)] [☑️ All] [☐ None] [✨ Latest 5]       │
-│                                                                        │
-│ [x] Ep #001 | تحلیل «چنین گفت زرتشت» (۱)      | 40:56 | 37.5 MB       │
-│ [x] Ep #002 | تحلیل «چنین گفت زرتشت» (۲)      | 56:32 | 52.3 MB       │
-│ ...                                                                    │
-│ Overall: [████████████████████░░░░░] 65%                               │
-│ Current: [█████████████████████████] 100% | 4.2 MB/s                   │
-│                                                                        │
-│ [📥 Download Selected Episodes]              [⛔ Cancel Download]      │
-└────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ 🎙️ Telegram Podcast Studio & Downloader                    🟢 Connected as: Younes     │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ [📚 Podcast Library & Studio] [📂 Telegram Desktop Export (Safe)] [📥 Direct Downloader] [🐙 GitHub Sync]│
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Tab 1: 📥 Telegram Downloader
-1. Enter the channel username (e.g. `@agrafoss` or full link `https://t.me/agrafoss`).
-2. Click **🔗 Scan Podcasts in Channel**.
-3. Filter by series (e.g. `#چنین_گفت_زرتشت`).
-4. Select episodes using the interactive table or quick buttons (`Latest 5`, `Latest 10`, `Un-downloaded Only`).
-5. Click **📥 Download Selected Episodes**. Dual progress bars show live download speed, percentage, and ETA.
-
-### Tab 2: 📚 Podcast Library & Studio
+### Tab 1: 📚 Podcast Library & Studio
 1. Browse downloaded podcast series and episodes.
 2. Search episodes by title, episode number, or keywords in Persian/English.
 3. Edit titles, host/artist, and detailed markdown notes.
 4. Drag and drop any image file into the artwork box to replace the thumbnail.
 5. Click **💾 Save Changes** to update `info.json`, `info.md`, embed new ID3 tags into `audio.mp3`, and rebuild the catalog.
 
-### Tab 3: 🐙 GitHub Sync & Settings
-1. Configure your remote GitHub repository URL.
+### Tab 2: 📂 Telegram Desktop Export (100% Safe Zero-API Mode)
+1. In the official **Telegram Desktop** app, open any channel or chat.
+2. Click the channel name → **3 dots (⋮) menu** → **Export chat history**.
+3. Check **Voice / Audio messages** and choose **Machine-readable JSON** or **HTML** format.
+4. In Podcast Studio, click **⚡ Auto-Detect** or **📁 Browse...** to select your `ChatExport_*` folder.
+5. Click **📂 Scan Export Folder**, choose episodes, and click **🚀 Import & Organize Selected Episodes**.
+> [!TIP]
+> **Why Zero-API Mode?** This mode requires **NO Telegram API keys and NO account login**. It runs completely offline and **CANNOT cause Telegram account lockouts or device disconnects!**
+
+### Tab 3: 📥 Direct Telegram Downloader
+1. Enter your custom API credentials in Settings (see [How to Get Telegram API Keys](#-how-to-get-telegram-api-keys-safely) below).
+2. Enter the channel username (e.g. `@agrafoss` or full link `https://t.me/agrafoss`).
+3. Click **🔗 Scan Podcasts in Channel**.
+4. Filter by series (e.g. `#چنین_گفت_زرتشت`).
+5. Select episodes using the interactive table or quick buttons (`Latest 5`, `Latest 10`, `Un-downloaded Only`).
+6. Click **📥 Download Selected Episodes**. Dual progress bars show live download speed, percentage, and ETA.
+
+### Tab 4: 🐙 GitHub Sync & Settings
+1. Configure your remote GitHub repository URL and custom Telegram API keys.
 2. Click **🚀 Commit & Push Entire Archive to GitHub** to sync notes, thumbnails, and catalog tables.
 3. Rebuild RSS feeds and catalogs with a single click.
+
+---
+
+## 🔑 How to Get Telegram API Keys Safely
+
+If you wish to use the direct MTProto downloader instead of the Desktop Export mode, create your free API credentials on `my.telegram.org`.
+
+> [!IMPORTANT]
+> **To avoid the generic "ERROR" on `my.telegram.org`:**
+> 1. Log in to [my.telegram.org](https://my.telegram.org) with your Telegram phone number.
+> 2. Click **API development tools**.
+> 3. **App title:** `PodcastManager` (alphanumeric only)
+> 4. **Short name:** `podcastmgr` (lowercase English letters only, **no spaces, no hyphens!**)
+> 5. **URL:** Leave blank or type `https://github.com`
+> 6. **Platform:** Select `Desktop`
+> 7. Disable any aggressive browser ad-blockers before submitting.
+> 8. Copy your **App api_id** and **App api_hash** into the app's **Settings** or `.env` file.
 
 ---
 

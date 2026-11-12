@@ -53,27 +53,37 @@ def render_progress_bar(current: int, total: int, start_time: float, prefix: str
 class PodcastDownloader:
     def __init__(self, config: Config, loop: Optional[asyncio.AbstractEventLoop] = None):
         self.config = config
+        self.loop = loop
         proxy = self.config.proxy_tuple
-        
-        # Initialize Telethon Client with official client identification
-        self.client = TelegramClient(
-            str(self.config.session_path),
-            int(self.config.api_id),
-            self.config.api_hash,
-            proxy=proxy,
-            device_model="Desktop",
-            system_version="Windows 11",
-            app_version="5.0.0",
-            lang_code="en",
-            system_lang_code="en",
-            loop=loop
-        )
         self.channel_entity = None
         self.channel_title = ""
         self.channel_username = ""
 
+        if self.config.is_configured():
+            try:
+                api_id_int = int(self.config.api_id)
+            except ValueError:
+                api_id_int = 0
+
+            self.client = TelegramClient(
+                str(self.config.session_path),
+                api_id_int,
+                self.config.api_hash,
+                proxy=proxy,
+                device_model="PC 64bit",
+                system_version="Windows 11",
+                app_version="1.0.0",
+                lang_code="en",
+                system_lang_code="en",
+                loop=loop
+            )
+        else:
+            self.client = None
+
     async def connect(self):
         """Connects and authorizes with Telegram via QR Code or Phone."""
+        if not self.client:
+            raise ValueError("Telegram API credentials (API ID & Hash) are not configured. Please configure them in Settings or use Telegram Desktop Export mode.")
         try:
             if not self.client.is_connected():
                 await self.client.connect()
@@ -328,31 +338,12 @@ class PodcastDownloader:
                     else:
                         render_progress_bar(cur, tot, start_time, prefix="Audio")
 
-                doc = getattr(message.media, "document", None)
-                if doc:
-                    print(f"   Downloading audio file with Fast Multi-Connection Engine ({format_size(metadata.file_size)})...")
-                    try:
-                        with open(audio_path, "wb") as f:
-                            await fast_telethon.download_file(
-                                self.client,
-                                doc,
-                                f,
-                                progress_callback=prog,
-                                is_cancelled=is_cancelled
-                            )
-                    except Exception as fast_err:
-                        print(f"   Fast engine note ({fast_err}), falling back to standard...")
-                        await self.client.download_media(
-                            message,
-                            file=str(audio_path),
-                            progress_callback=prog
-                        )
-                else:
-                    await self.client.download_media(
-                        message,
-                        file=str(audio_path),
-                        progress_callback=prog
-                    )
+                print(f"   Downloading audio file ({format_size(metadata.file_size)})...")
+                await self.client.download_media(
+                    message,
+                    file=str(audio_path),
+                    progress_callback=prog
+                )
                 print(f"   Download complete in {int(time.time() - start_time)}s.")
 
         # 4. Embed ID3 Tags into MP3
