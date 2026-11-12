@@ -366,12 +366,39 @@ class TelegramLoginDialog(QDialog):
             self.qrGenerated.emit(png_bytes)
             self.qrStatusChanged.emit("Waiting for scan on Telegram mobile app...", "#a6e3a1")
 
-            # Wait for user scan (up to 120s)
-            user = self.bridge.run_coro(qr_login.wait(timeout=120))
+            # Wait for user scan with active polling so it detects the scan immediately
+            async def wait_scan():
+                from telethon import types, functions
+                req = qr_login._request
+                end_time = time.time() + 90
+                while time.time() < end_time:
+                    if await self.downloader.client.is_user_authorized():
+                        me = await self.downloader.client.get_me()
+                        return (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+                    try:
+                        resp = await self.downloader.client(req)
+                        if isinstance(resp, types.auth.LoginTokenMigrateTo):
+                            await self.downloader.client._switch_dc(resp.dc_id)
+                            resp = await self.downloader.client(functions.auth.ImportLoginTokenRequest(resp.token))
+                        if isinstance(resp, types.auth.LoginTokenSuccess):
+                            user = resp.authorization.user
+                            await self.downloader.client._on_login(user)
+                            return (user.first_name or "") + (f" {user.last_name}" if user.last_name else "")
+                    except SessionPasswordNeededError:
+                        raise
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1.5)
+
+                if await self.downloader.client.is_user_authorized():
+                    me = await self.downloader.client.get_me()
+                    return (me.first_name or "") + (f" {me.last_name}" if me.last_name else "")
+                raise asyncio.TimeoutError("QR code expired without scan")
+
+            user_name = self.bridge.run_coro(wait_scan())
             if self.is_closed or task_id != self.qr_task_id:
                 return
 
-            user_name = (user.first_name or "") + (f" {user.last_name}" if user.last_name else "")
             QTimer.singleShot(0, lambda: self._on_login_success(user_name))
 
         except SessionPasswordNeededError:
