@@ -69,9 +69,9 @@ class PodcastDownloader:
             api_id_int,
             self.config.api_hash,
             proxy=proxy,
-            device_model="Samsung SM-G998B",
-            system_version="SDK 33",
-            app_version="10.8.1",
+            device_model="Desktop",
+            system_version="Windows 11",
+            app_version="5.0.0",
             lang_code="en",
             system_lang_code="en",
             loop=loop

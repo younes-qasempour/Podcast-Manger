@@ -247,6 +247,11 @@ class TelegramLoginDialog(QDialog):
         self.refresh_qr_btn.clicked.connect(self.start_qr_login)
         qr_layout.addWidget(self.refresh_qr_btn)
 
+        terminal_btn = QPushButton("💻 Open Simple Terminal Login")
+        terminal_btn.setStyleSheet("background-color: #313244; color: #89b4fa; border: 1px solid #45475a; padding: 7px;")
+        terminal_btn.clicked.connect(self._launch_terminal_login)
+        qr_layout.addWidget(terminal_btn)
+
         self.tab_widget.addTab(qr_tab, "📲 Scan QR Code")
 
         # TAB 2: Phone Number + Code
@@ -290,6 +295,14 @@ class TelegramLoginDialog(QDialog):
 
         self.tab_widget.setCurrentIndex(0)
         QTimer.singleShot(100, self.start_qr_login)
+
+    def _launch_terminal_login(self):
+        import subprocess
+        self.is_closed = True
+        self.qr_task_id += 1
+        script_path = Path(__file__).resolve().parent / "quick_login.py"
+        subprocess.Popen(["cmd.exe", "/c", "start", "cmd.exe", "/k", sys.executable, str(script_path)])
+        self.accept()
 
     def closeEvent(self, event):
         self.is_closed = True

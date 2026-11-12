@@ -57,8 +57,8 @@ def save_env_file(data: Dict[str, Any], dotenv_path: Optional[Path] = None):
         f.writelines(new_lines)
 
 
-DEFAULT_API_ID = "6"
-DEFAULT_API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
+DEFAULT_API_ID = "2040"
+DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
 
 
 class Config:
