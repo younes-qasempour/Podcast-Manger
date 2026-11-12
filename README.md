@@ -139,60 +139,49 @@ python main.py
 
 ## 🖥️ Desktop Studio GUI
 
-The application includes a PyQt6 desktop interface organized into four tabs:
+The application includes a clean PyQt6 desktop interface organized into three tabs:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ 🎙️ Telegram Podcast Studio & Downloader                    🟢 Connected as: Younes     │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│ [📚 Podcast Library & Studio] [📂 Telegram Desktop Export (Safe)] [📥 Direct Downloader] [🐙 GitHub Sync]│
+│ [📥 Telegram Downloader] [📚 Podcast Library & Studio] [🐙 GitHub Sync & Settings]     │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Tab 1: 📚 Podcast Library & Studio
-1. Browse downloaded podcast series and episodes.
-2. Search episodes by title, episode number, or keywords in Persian/English.
-3. Edit titles, host/artist, and detailed markdown notes.
-4. Drag and drop any image file into the artwork box to replace the thumbnail.
-5. Click **💾 Save Changes** to update `info.json`, `info.md`, embed new ID3 tags into `audio.mp3`, and rebuild the catalog.
-
-### Tab 2: 📂 Telegram Desktop Export (100% Safe Zero-API Mode)
-1. In the official **Telegram Desktop** app, open any channel or chat.
-2. Click the channel name → **3 dots (⋮) menu** → **Export chat history**.
-3. Check **Voice / Audio messages** and choose **Machine-readable JSON** or **HTML** format.
-4. In Podcast Studio, click **⚡ Auto-Detect** or **📁 Browse...** to select your `ChatExport_*` folder.
-5. Click **📂 Scan Export Folder**, choose episodes, and click **🚀 Import & Organize Selected Episodes**.
-> [!TIP]
-> **Why Zero-API Mode?** This mode requires **NO Telegram API keys and NO account login**. It runs completely offline and **CANNOT cause Telegram account lockouts or device disconnects!**
-
-### Tab 3: 📥 Direct Telegram Downloader
-1. Enter your custom API credentials in Settings (see [How to Get Telegram API Keys](#-how-to-get-telegram-api-keys-safely) below).
+### Tab 1: 📥 Direct Telegram Downloader
+1. Click **`🔑 Telegram Account`** at the top right to link your Telegram account via **Instant QR Code** on your phone (or phone number). No API configuration required!
 2. Enter the channel username (e.g. `@agrafoss` or full link `https://t.me/agrafoss`).
 3. Click **🔗 Scan Podcasts in Channel**.
 4. Filter by series (e.g. `#چنین_گفت_زرتشت`).
 5. Select episodes using the interactive table or quick buttons (`Latest 5`, `Latest 10`, `Un-downloaded Only`).
 6. Click **📥 Download Selected Episodes**. Dual progress bars show live download speed, percentage, and ETA.
 
-### Tab 4: 🐙 GitHub Sync & Settings
-1. Configure your remote GitHub repository URL and custom Telegram API keys.
+### Tab 2: 📚 Podcast Library & Studio
+1. Browse downloaded podcast series and episodes.
+2. Search episodes by title, episode number, or keywords in Persian/English.
+3. Edit titles, host/artist, and detailed markdown notes.
+4. Drag and drop any image file into the artwork box to replace the thumbnail.
+5. Click **💾 Save Changes** to update `info.json`, `info.md`, embed new ID3 tags into `audio.mp3`, and rebuild the catalog.
+
+### Tab 3: 🐙 GitHub Sync & Settings
+1. Configure your remote GitHub repository URL.
 2. Click **🚀 Commit & Push Entire Archive to GitHub** to sync notes, thumbnails, and catalog tables.
 3. Rebuild RSS feeds and catalogs with a single click.
 
 ---
 
-## 🔑 How to Get Telegram API Keys Safely
+## 🔑 Effortless Telegram Account Connection
 
-If you wish to use the direct MTProto downloader instead of the Desktop Export mode, create your free API credentials on `my.telegram.org`.
+You do **not** need to register apps or generate credentials on `my.telegram.org`. The studio includes standard client identification out of the box.
 
-> [!IMPORTANT]
-> **To avoid the generic "ERROR" on `my.telegram.org`:**
-> 1. Log in to [my.telegram.org](https://my.telegram.org) with your Telegram phone number.
-> 2. Click **API development tools**.
-> 3. **App title:** `PodcastManager` (alphanumeric only)
-> 4. **Short name:** `podcastmgr` (lowercase English letters only, **no spaces, no hyphens!**)
-> 5. **URL:** Leave blank or type `https://github.com`
-> 6. **Platform:** Select `Desktop`
-> 7. Disable any aggressive browser ad-blockers before submitting.
+### Instant QR Code Login (Fastest & 100% Reliable):
+1. In the app, click **`🔑 Telegram Account`** (top right).
+2. The **`📲 Scan QR Code`** tab opens and displays a QR code.
+3. On your phone, open the **Telegram app**.
+4. Go to: **Settings** $\rightarrow$ **Devices** $\rightarrow$ **Link Desktop Device** *(تنظیمات $\rightarrow$ دستگاه‌ها $\rightarrow$ اتصال دستگاه جدید)*.
+5. Point your camera at the QR code on your PC screen and tap **Confirm**.
+6. **You are logged in immediately without SMS wait times or flood errors!**
 > 8. Copy your **App api_id** and **App api_hash** into the app's **Settings** or `.env` file.
 
 ---

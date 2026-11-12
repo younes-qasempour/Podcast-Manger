@@ -35,10 +35,6 @@ from utils import (
     sanitize_filename, format_duration, format_size,
     extract_hashtags, clean_for_terminal, extract_episode_number
 )
-from export_organizer import (
-    TelegramExportOrganizer, find_recent_telegram_exports,
-    parse_telegram_text_entities
-)
 
 
 # =============================================================================
@@ -122,8 +118,8 @@ class TelegramBridge:
 
     def ensure_connected(self):
         """Ensures the Telegram client is connected."""
-        if not self.config.is_configured() or not self.downloader or not self.downloader.client:
-            raise ValueError("Telegram API credentials (API ID & Hash) are not configured. Please set them in Settings or use the Telegram Desktop Export tab.")
+        if not self.downloader or not self.downloader.client:
+            self.reload_downloader()
         if not self.is_connected():
             self.run_coro(self.downloader.client.connect())
 
@@ -141,7 +137,7 @@ class TelegramBridge:
 
 
 # =============================================================================
-# Telegram In-App Login Dialog (QR Code + Phone Number + 2FA)
+# Telegram In-App Login Dialog (Instant QR Code + Phone Number)
 # =============================================================================
 class TelegramLoginDialog(QDialog):
     loginSuccessful = pyqtSignal(str)
@@ -155,7 +151,7 @@ class TelegramLoginDialog(QDialog):
         self.is_qr_active = False
 
         self.setWindowTitle("🔑 Log In to Telegram")
-        self.resize(460, 520)
+        self.resize(450, 480)
         self.setStyleSheet("""
             QDialog { background-color: #1e1e2e; color: #cdd6f4; }
             QLabel { color: #cdd6f4; font-family: 'Segoe UI', Tahoma, sans-serif; }
@@ -178,61 +174,18 @@ class TelegramLoginDialog(QDialog):
         self.tab_widget = QTabWidget()
         layout.addWidget(self.tab_widget)
 
-        # TAB 1: API Credentials Setup
-        cred_tab = QWidget()
-        cred_layout = QVBoxLayout(cred_tab)
-        cred_layout.setSpacing(10)
-
-        info_box = QFrame()
-        info_box.setStyleSheet("background-color: #11111b; border: 1px solid #45475a; border-radius: 8px; padding: 10px;")
-        info_l = QVBoxLayout(info_box)
-        info_l.setSpacing(6)
-
-        warn_title = QLabel("🛡️ Why You Need Personal API Keys:")
-        warn_title.setStyleSheet("color: #fab387; font-weight: bold; font-size: 13px;")
-        info_l.addWidget(warn_title)
-
-        warn_desc = QLabel(
-            "Telegram automatically terminates all logged-in devices if an app uses shared or public desktop keys.<br>"
-            "Using your own free API keys from <b>my.telegram.org</b> stops Telegram from disconnecting you!<br><br>"
-            "<b>Quick 1-Minute Steps (Avoiding the 'ERROR' message):</b><br>"
-            "1. Open <b>my.telegram.org</b> in your browser and log in with your phone.<br>"
-            "2. Click <b>API development tools</b>.<br>"
-            "3. <b>App title:</b> <code>PodcastManager</code><br>"
-            "4. <b>Short name:</b> <code>podcastmgr</code> (lowercase letters only, no spaces!)<br>"
-            "5. Click <b>Create application</b> and copy the App api_id and App api_hash below:"
-        )
-        warn_desc.setStyleSheet("color: #cdd6f4; font-size: 12px; line-height: 1.4;")
-        info_l.addWidget(warn_desc)
-        cred_layout.addWidget(info_box)
-
-        form = QFormLayout()
-        form.setSpacing(8)
-
-        self.api_id_input = QLineEdit(self.cfg.api_id)
-        self.api_id_input.setPlaceholderText("e.g. 28475923")
-        form.addRow("App API ID:", self.api_id_input)
-
-        self.api_hash_input = QLineEdit(self.cfg.api_hash)
-        self.api_hash_input.setPlaceholderText("e.g. 9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c")
-        form.addRow("App API Hash:", self.api_hash_input)
-
-        cred_layout.addLayout(form)
-
-        save_cred_btn = QPushButton("💾 Save API Credentials & Continue")
-        save_cred_btn.clicked.connect(self.save_api_credentials)
-        cred_layout.addWidget(save_cred_btn)
-
-        cred_layout.addStretch()
-        self.tab_widget.addTab(cred_tab, "⚙️ API Credentials")
-
-        # TAB 2: QR Code
+        # TAB 1: QR Code Login (Primary & Fast)
         qr_tab = QWidget()
         qr_layout = QVBoxLayout(qr_tab)
         qr_layout.setSpacing(10)
         qr_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        inst_label = QLabel("1. Open Telegram on your phone\n2. Go to Settings > Devices > Link Desktop Device\n3. Scan this QR code:")
+        inst_label = QLabel(
+            "<b>Instant Mobile QR Login:</b><br>"
+            "1. Open <b>Telegram</b> on your phone<br>"
+            "2. Go to <b>Settings</b> → <b>Devices</b> → <b>Link Desktop Device</b><br>"
+            "3. Scan this QR code with your phone camera:"
+        )
         inst_label.setStyleSheet("color: #a6adc8; font-size: 12px; line-height: 1.4;")
         inst_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qr_layout.addWidget(inst_label)
@@ -254,7 +207,7 @@ class TelegramLoginDialog(QDialog):
 
         self.tab_widget.addTab(qr_tab, "📲 Scan QR Code")
 
-        # TAB 3: Phone Number + Code
+        # TAB 2: Phone Number + Code
         phone_tab = QWidget()
         phone_layout = QVBoxLayout(phone_tab)
         phone_layout.setSpacing(10)
@@ -286,33 +239,13 @@ class TelegramLoginDialog(QDialog):
         phone_layout.addStretch()
         self.tab_widget.addTab(phone_tab, "📱 Phone Number")
 
-        # Choose start tab
-        if not self.cfg.is_configured():
-            self.tab_widget.setCurrentIndex(0)
-        else:
-            self.tab_widget.setCurrentIndex(1)
-            QTimer.singleShot(200, self.start_qr_login)
-
-    def save_api_credentials(self):
-        api_id = self.api_id_input.text().strip()
-        api_hash = self.api_hash_input.text().strip()
-        if not api_id or not api_hash:
-            QMessageBox.warning(self, "Input Required", "Please enter both API ID and API Hash.")
-            return
-
-        self.cfg.update(TG_API_ID=api_id, TG_API_HASH=api_hash)
-        self.bridge.reload_downloader()
-        self.downloader = self.bridge.downloader
-        QMessageBox.information(self, "Saved", "API credentials saved! You can now scan the QR code or log in via phone number.")
-        self.tab_widget.setCurrentIndex(1)
-        self.start_qr_login()
+        self.tab_widget.setCurrentIndex(0)
+        QTimer.singleShot(150, self.start_qr_login)
 
     def start_qr_login(self):
-        if not self.cfg.is_configured():
-            self.qr_status.setText("⚠️ Configure API ID & Hash in 'API Credentials' tab first.")
-            return
         self.is_qr_active = True
         self.qr_status.setText("Connecting to Telegram...")
+        threading.Thread(target=self._qr_worker, daemon=True).start()
         threading.Thread(target=self._qr_worker, daemon=True).start()
 
     def _qr_worker(self):
@@ -418,13 +351,6 @@ class DownloaderSignals(QObject):
     download_all_finished = pyqtSignal(bool, str)
 
 
-class ExportSignals(QObject):
-    log = pyqtSignal(str)
-    progress = pyqtSignal(int, int, str)
-    scan_finished = pyqtSignal(list, str)
-    process_finished = pyqtSignal(bool, str)
-
-
 # =============================================================================
 # Main GUI Window
 # =============================================================================
@@ -437,11 +363,6 @@ class PodcastStudioGUI(QMainWindow):
         self.current_library_episodes: List[Dict[str, Any]] = []
         self.selected_lib_index = -1
         self.pending_new_cover_path: Optional[Path] = None
-
-        # Export Organizer State
-        self.scanned_export_episodes: List[Dict[str, Any]] = []
-        self.is_export_running = False
-        self.export_channel_name = "Exported Podcast"
 
         # Downloader & Async Telethon Bridge
         self.bridge = TelegramBridge(self.cfg)
@@ -527,22 +448,17 @@ class PodcastStudioGUI(QMainWindow):
         self.tabs = QTabWidget()
         root_layout.addWidget(self.tabs)
 
-        # TAB 1: Library & Studio
+        # TAB 1: Downloader (Primary)
+        self.downloader_tab = QWidget()
+        self.init_downloader_tab()
+        self.tabs.addTab(self.downloader_tab, "📥 Telegram Downloader")
+
+        # TAB 2: Library & Studio
         self.library_tab = QWidget()
         self.init_library_tab()
         self.tabs.addTab(self.library_tab, "📚 Podcast Library & Studio")
 
-        # TAB 2: Zero-API Desktop Chat Export Importer (100% Safe)
-        self.export_tab = QWidget()
-        self.init_export_tab()
-        self.tabs.addTab(self.export_tab, "📂 Telegram Desktop Export (Safe)")
-
-        # TAB 3: Direct MTProto Downloader
-        self.downloader_tab = QWidget()
-        self.init_downloader_tab()
-        self.tabs.addTab(self.downloader_tab, "📥 Direct Telegram Downloader")
-
-        # TAB 4: Git & Settings
+        # TAB 3: Git & Settings
         self.settings_tab = QWidget()
         self.init_settings_tab()
         self.tabs.addTab(self.settings_tab, "🐙 GitHub Sync & Settings")
@@ -553,11 +469,6 @@ class PodcastStudioGUI(QMainWindow):
     # Auth Status Checker
     # =========================================================================
     def check_auth_status_async(self):
-        if not self.cfg.is_configured():
-            self.account_status_label.setText("⚙️ API Keys Needed")
-            self.account_status_label.setStyleSheet("color: #f9e2af; font-weight: bold; margin-right: 8px;")
-            return
-
         def worker():
             try:
                 self.bridge.ensure_connected()
@@ -744,595 +655,7 @@ class PodcastStudioGUI(QMainWindow):
         layout.addWidget(splitter)
 
     # =========================================================================
-    # TAB 2: Zero-API Telegram Desktop Export Organizer (100% Safe)
-    # =========================================================================
-    def init_export_tab(self):
-        layout = QVBoxLayout(self.export_tab)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-
-        # 1. Info Banner
-        banner = QFrame()
-        banner.setStyleSheet("""
-            QFrame {
-                background-color: #1e1e2e;
-                border: 1px solid #89b4fa;
-                border-radius: 8px;
-                padding: 10px;
-            }
-        """)
-        banner_layout = QVBoxLayout(banner)
-        banner_layout.setContentsMargins(8, 6, 8, 6)
-        banner_layout.setSpacing(4)
-
-        banner_title = QLabel("🛡️ Zero-API Chat Export Mode (100% Safe & Login-Free)")
-        banner_title.setStyleSheet("font-weight: bold; color: #89b4fa; font-size: 14px;")
-        banner_layout.addWidget(banner_title)
-
-        banner_desc = QLabel(
-            "Export any channel or chat from Telegram Desktop (3 dots menu ⋮ → 'Export chat history' → check 'Voice / Audio messages' & JSON or HTML format).<br>"
-            "This mode requires <b>NO Telegram login</b>, works offline, and <b>CANNOT cause account lockouts or device disconnects!</b>"
-        )
-        banner_desc.setWordWrap(True)
-        banner_desc.setStyleSheet("color: #a6adc8; font-size: 12px; line-height: 1.4;")
-        banner_layout.addWidget(banner_desc)
-        layout.addWidget(banner)
-
-        # 2. Folder Selection Group
-        folder_box = QGroupBox("1. Telegram Desktop Export Directory")
-        folder_layout = QHBoxLayout(folder_box)
-
-        folder_layout.addWidget(QLabel("Export Folder:"))
-        self.export_folder_input = QLineEdit()
-        self.export_folder_input.setPlaceholderText("Path to ChatExport_YYYY-MM-DD folder (containing result.json or messages.html)...")
-        folder_layout.addWidget(self.export_folder_input)
-
-        browse_btn = QPushButton("📁 Browse...")
-        browse_btn.setObjectName("secondaryBtn")
-        browse_btn.clicked.connect(self.browse_export_folder)
-        folder_layout.addWidget(browse_btn)
-
-        autodetect_btn = QPushButton("⚡ Auto-Detect")
-        autodetect_btn.setObjectName("secondaryBtn")
-        autodetect_btn.clicked.connect(self.auto_detect_export_folder)
-        folder_layout.addWidget(autodetect_btn)
-
-        self.scan_export_btn = QPushButton("📂 Scan Export Folder")
-        self.scan_export_btn.clicked.connect(self.start_export_scan)
-        folder_layout.addWidget(self.scan_export_btn)
-
-        self.export_status_badge = QLabel("⚪ No export loaded")
-        self.export_status_badge.setStyleSheet("color: #a6adc8; font-weight: bold; margin-left: 6px;")
-        folder_layout.addWidget(self.export_status_badge)
-
-        layout.addWidget(folder_box)
-
-        # 3. Filter & Selection Helpers
-        filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("🔍 Filter:"))
-        self.export_filter_input = QLineEdit()
-        self.export_filter_input.setPlaceholderText("Search episodes by title, #, or artist...")
-        self.export_filter_input.textChanged.connect(self.filter_export_table)
-        filter_row.addWidget(self.export_filter_input)
-
-        filter_row.addSpacing(12)
-
-        sel_all_btn = QPushButton("☑️ All")
-        sel_all_btn.setObjectName("secondaryBtn")
-        sel_all_btn.clicked.connect(lambda: self.set_export_table_selection(True))
-        filter_row.addWidget(sel_all_btn)
-
-        sel_none_btn = QPushButton("☐ None")
-        sel_none_btn.setObjectName("secondaryBtn")
-        sel_none_btn.clicked.connect(lambda: self.set_export_table_selection(False))
-        filter_row.addWidget(sel_none_btn)
-
-        sel_5_btn = QPushButton("✨ Latest 5")
-        sel_5_btn.setObjectName("secondaryBtn")
-        sel_5_btn.clicked.connect(lambda: self.select_latest_export_n(5))
-        filter_row.addWidget(sel_5_btn)
-
-        sel_10_btn = QPushButton("✨ Latest 10")
-        sel_10_btn.setObjectName("secondaryBtn")
-        sel_10_btn.clicked.connect(lambda: self.select_latest_export_n(10))
-        filter_row.addWidget(sel_10_btn)
-
-        filter_row.addStretch()
-        layout.addLayout(filter_row)
-
-        # Selection Stats Label
-        self.export_stats_label = QLabel("Selected: 0 episodes (0 MB)")
-        self.export_stats_label.setStyleSheet("color: #cdd6f4; font-weight: bold;")
-        layout.addWidget(self.export_stats_label)
-
-        # 4. Export Table
-        self.export_table = QTableWidget(0, 6)
-        self.export_table.setHorizontalHeaderLabels(["Select", "Ep #", "Title", "Artist / Channel", "Duration", "Size"])
-        self.export_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.export_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.export_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.export_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        self.export_table.horizontalHeader().resizeSection(3, 180)
-        self.export_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.export_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        self.export_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.export_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.export_table.cellClicked.connect(self.on_export_table_cell_clicked)
-        self.export_table.itemChanged.connect(lambda item: self.update_export_selection_stats())
-        layout.addWidget(self.export_table)
-
-        # 5. Organization Options
-        opts_box = QHBoxLayout()
-        self.exp_opt_copy = QCheckBox("Copy files to podcasts/ (uncheck to move)")
-        self.exp_opt_copy.setChecked(True)
-        opts_box.addWidget(self.exp_opt_copy)
-
-        self.exp_opt_tags = QCheckBox("Embed ID3 tags & Persian descriptions into MP3")
-        self.exp_opt_tags.setChecked(True)
-        opts_box.addWidget(self.exp_opt_tags)
-
-        self.exp_opt_catalog = QCheckBox("Build README.md catalog & RSS podcast feed")
-        self.exp_opt_catalog.setChecked(True)
-        opts_box.addWidget(self.exp_opt_catalog)
-
-        opts_box.addStretch()
-        layout.addLayout(opts_box)
-
-        # 6. Action Button & Progress
-        act_row = QHBoxLayout()
-        self.start_export_import_btn = QPushButton("🚀 Import & Organize Selected Episodes to Library")
-        self.start_export_import_btn.setObjectName("actionBtn")
-        self.start_export_import_btn.clicked.connect(self.start_export_import)
-        act_row.addWidget(self.start_export_import_btn)
-        layout.addLayout(act_row)
-
-        self.export_prog_bar = QProgressBar()
-        self.export_prog_bar.setRange(0, 100)
-        self.export_prog_bar.setValue(0)
-        layout.addWidget(self.export_prog_bar)
-
-        self.export_prog_label = QLabel("Ready.")
-        self.export_prog_label.setStyleSheet("color: #a6adc8;")
-        layout.addWidget(self.export_prog_label)
-
-        # 7. Log Area
-        self.export_log_text = QTextEdit()
-        self.export_log_text.setReadOnly(True)
-        self.export_log_text.setMaximumHeight(110)
-        self.export_log_text.setPlaceholderText("Export processing logs will appear here...")
-        layout.addWidget(self.export_log_text)
-
-    def log_export(self, msg: str):
-        self.export_log_text.append(msg)
-        self.export_log_text.verticalScrollBar().setValue(self.export_log_text.verticalScrollBar().maximum())
-
-    def browse_export_folder(self):
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select Telegram Desktop ChatExport Folder",
-            str(Path.home() / "Downloads")
-        )
-        if folder:
-            self.export_folder_input.setText(folder)
-            self.start_export_scan()
-
-    def auto_detect_export_folder(self):
-        found = find_recent_telegram_exports()
-        if found:
-            best = found[0]
-            self.export_folder_input.setText(str(best))
-            self.log_export(f"⚡ Auto-detected Telegram export: {best.name} ({str(best)})")
-            self.start_export_scan()
-        else:
-            QMessageBox.information(
-                self,
-                "No Export Found",
-                "Could not auto-detect recent ChatExport_* folders in Downloads or Documents.\n\n"
-                "Please click 'Browse...' and choose your Telegram export folder."
-            )
-
-    def start_export_scan(self):
-        folder_str = self.export_folder_input.text().strip()
-        if not folder_str:
-            QMessageBox.warning(self, "Folder Required", "Please specify or browse to a Telegram export folder.")
-            return
-
-        exp_dir = Path(folder_str)
-        if not exp_dir.exists() or not exp_dir.is_dir():
-            QMessageBox.critical(self, "Invalid Path", f"The directory '{folder_str}' does not exist.")
-            return
-
-        self.export_status_badge.setText("⏳ Scanning export folder...")
-        self.scan_export_btn.setEnabled(False)
-        self.log_export(f"Scanning export folder: {exp_dir}...")
-
-        self.exp_signals = ExportSignals()
-        self.exp_signals.log.connect(self.log_export)
-        self.exp_signals.scan_finished.connect(self.on_export_scan_finished)
-
-        def worker():
-            try:
-                organizer = TelegramExportOrganizer(exp_dir, self.cfg.output_dir)
-                exp_type = organizer.detect_export_type()
-                episodes = []
-                channel_name = exp_dir.name
-
-                if exp_type == "json":
-                    json_path = exp_dir / "result.json"
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    channel_name = data.get("name") or exp_dir.name
-                    messages = data.get("messages", [])
-
-                    for msg in messages:
-                        if msg.get("type") != "message":
-                            continue
-                        media_type = msg.get("media_type")
-                        mime_type = msg.get("mime_type", "")
-                        file_field = msg.get("file", "")
-
-                        is_audio = (
-                            media_type in ("audio_file", "voice_message") or
-                            mime_type.startswith("audio/") or
-                            file_field.lower().endswith((".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav"))
-                        )
-                        if not (is_audio and file_field):
-                            continue
-
-                        source_path = exp_dir / file_field
-                        if not source_path.exists():
-                            continue
-
-                        caption = parse_telegram_text_entities(msg.get("text", ""))
-                        title = msg.get("title") or source_path.stem
-                        artist = msg.get("performer") or channel_name
-                        dur = msg.get("duration_seconds") or 0
-                        size = source_path.stat().st_size
-                        msg_id = msg.get("id", 0)
-                        ep_num = extract_episode_number(caption, title)
-
-                        thumb_path = None
-                        if msg.get("thumbnail"):
-                            t = exp_dir / msg.get("thumbnail")
-                            if t.exists():
-                                thumb_path = t
-
-                        episodes.append({
-                            "message_id": msg_id,
-                            "title": title,
-                            "artist": artist,
-                            "caption": caption,
-                            "duration": dur,
-                            "duration_formatted": format_duration(dur),
-                            "file_size": size,
-                            "file_size_formatted": format_size(size),
-                            "episode_number": ep_num,
-                            "source_audio": source_path,
-                            "source_thumb": thumb_path,
-                            "channel_name": channel_name
-                        })
-
-                elif exp_type == "html":
-                    from bs4 import BeautifulSoup
-                    html_files = sorted(exp_dir.glob("messages*.html"))
-                    for h_file in html_files:
-                        with open(h_file, "r", encoding="utf-8") as f:
-                            soup = BeautifulSoup(f.read(), "html.parser")
-                        h_title = soup.find("div", class_="page_header")
-                        if h_title and channel_name == exp_dir.name:
-                            channel_name = h_title.get_text(strip=True)
-
-                        for msg_div in soup.find_all("div", class_="message"):
-                            body = msg_div.find("div", class_="body")
-                            if not body:
-                                continue
-                            media_wrap = body.find("div", class_="media_wrap")
-                            if not media_wrap:
-                                continue
-                            audio_link = media_wrap.find("a", href=re.compile(r"\.(mp3|m4a|ogg|opus|wav)$", re.IGNORECASE))
-                            if not audio_link:
-                                continue
-                            rel_href = audio_link["href"]
-                            source_path = exp_dir / rel_href
-                            if not source_path.exists():
-                                continue
-
-                            text_div = body.find("div", class_="text")
-                            caption = text_div.get_text(separator="\n", strip=True) if text_div else ""
-                            title_div = media_wrap.find("div", class_="title")
-                            title = title_div.get_text(strip=True) if title_div else source_path.stem
-                            dur_div = media_wrap.find("div", class_="status")
-                            dur_str = dur_div.get_text(strip=True) if dur_div else ""
-                            dur = 0
-
-                            size = source_path.stat().st_size
-                            ep_num = extract_episode_number(caption, title)
-                            episodes.append({
-                                "message_id": len(episodes) + 1,
-                                "title": title,
-                                "artist": channel_name,
-                                "caption": caption,
-                                "duration": dur,
-                                "duration_formatted": dur_str or "-",
-                                "file_size": size,
-                                "file_size_formatted": format_size(size),
-                                "episode_number": ep_num,
-                                "source_audio": source_path,
-                                "source_thumb": None,
-                                "channel_name": channel_name
-                            })
-
-                else:
-                    audio_files = sorted(list(exp_dir.glob("*.mp3")) + list(exp_dir.glob("*.m4a")))
-                    for idx, af in enumerate(audio_files, 1):
-                        title = af.stem
-                        size = af.stat().st_size
-                        ep_num = extract_episode_number("", title)
-                        episodes.append({
-                            "message_id": idx,
-                            "title": title,
-                            "artist": channel_name,
-                            "caption": "",
-                            "duration": 0,
-                            "duration_formatted": "-",
-                            "file_size": size,
-                            "file_size_formatted": format_size(size),
-                            "episode_number": ep_num,
-                            "source_audio": af,
-                            "source_thumb": None,
-                            "channel_name": channel_name
-                        })
-
-                def ep_sort_key(ep):
-                    num = ep.get("episode_number")
-                    return (0, num) if num is not None else (1, ep.get("message_id", 0))
-
-                episodes.sort(key=ep_sort_key)
-                self.exp_signals.scan_finished.emit(episodes, channel_name)
-            except Exception as e:
-                self.exp_signals.log.emit(f"❌ Scan error: {e}")
-                self.exp_signals.scan_finished.emit([], "")
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def on_export_scan_finished(self, episodes: List[Dict[str, Any]], channel_name: str):
-        self.scan_export_btn.setEnabled(True)
-        self.scanned_export_episodes = episodes
-        self.export_channel_name = channel_name or "Exported Channel"
-
-        if not episodes:
-            self.export_status_badge.setText("❌ No audio files found in export")
-            self.log_export("Scan found no audio or podcast messages in this folder.")
-            self.populate_export_table([])
-            return
-
-        self.export_status_badge.setText(f"✅ {self.export_channel_name} ({len(episodes)} episodes)")
-        self.log_export(f"Successfully scanned {len(episodes)} podcast episodes from '{self.export_channel_name}'.")
-        self.populate_export_table(episodes)
-
-    def populate_export_table(self, episodes: List[Dict[str, Any]]):
-        self.export_table.blockSignals(True)
-        self.export_table.setRowCount(len(episodes))
-
-        safe_chan = sanitize_filename(self.export_channel_name, max_length=50)
-        target_dir = self.cfg.output_dir / safe_chan / "episodes"
-
-        for row, ep in enumerate(episodes):
-            ep_num = ep.get("episode_number")
-            num_prefix = f"{ep_num:03d} - " if ep_num is not None else ""
-            folder_name = sanitize_filename(f"{num_prefix}{ep['title']}", max_length=60)
-            is_saved = (target_dir / folder_name / "audio.mp3").exists() or (target_dir / folder_name / "info.json").exists()
-
-            chk = QTableWidgetItem()
-            chk.setCheckState(Qt.CheckState.Unchecked if is_saved else Qt.CheckState.Checked)
-            chk.setData(Qt.ItemDataRole.UserRole, ep)
-            self.export_table.setItem(row, 0, chk)
-
-            ep_str = f"Ep #{ep_num:03d}" if ep_num is not None else "No Ep#"
-            ep_item = QTableWidgetItem(ep_str)
-            ep_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.export_table.setItem(row, 1, ep_item)
-
-            status_tag = " [✅ Saved]" if is_saved else ""
-            title_item = QTableWidgetItem(f"{ep['title']}{status_tag}")
-            if is_saved:
-                title_item.setForeground(QColor("#a6e3a1"))
-            self.export_table.setItem(row, 2, title_item)
-
-            art_item = QTableWidgetItem(ep.get("artist", ""))
-            self.export_table.setItem(row, 3, art_item)
-
-            dur_item = QTableWidgetItem(ep.get("duration_formatted", "-"))
-            dur_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.export_table.setItem(row, 4, dur_item)
-
-            size_item = QTableWidgetItem(ep.get("file_size_formatted", "-"))
-            size_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.export_table.setItem(row, 5, size_item)
-
-        self.export_table.blockSignals(False)
-        self.update_export_selection_stats()
-
-    def on_export_table_cell_clicked(self, row: int, col: int):
-        item = self.export_table.item(row, 0)
-        if item and col != 0:
-            new_state = Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
-            item.setCheckState(new_state)
-
-    def set_export_table_selection(self, select: bool):
-        self.export_table.blockSignals(True)
-        for r in range(self.export_table.rowCount()):
-            item = self.export_table.item(r, 0)
-            if item:
-                item.setCheckState(Qt.CheckState.Checked if select else Qt.CheckState.Unchecked)
-        self.export_table.blockSignals(False)
-        self.update_export_selection_stats()
-
-    def select_latest_export_n(self, n: int):
-        self.export_table.blockSignals(True)
-        self.set_export_table_selection(False)
-        total = self.export_table.rowCount()
-        start = max(0, total - n)
-        for r in range(start, total):
-            item = self.export_table.item(r, 0)
-            if item:
-                item.setCheckState(Qt.CheckState.Checked)
-        self.export_table.blockSignals(False)
-        self.update_export_selection_stats()
-
-    def update_export_selection_stats(self):
-        count = 0
-        total_bytes = 0
-        for r in range(self.export_table.rowCount()):
-            item = self.export_table.item(r, 0)
-            if item and item.checkState() == Qt.CheckState.Checked:
-                ep_data = item.data(Qt.ItemDataRole.UserRole)
-                if ep_data:
-                    count += 1
-                    total_bytes += ep_data.get("file_size", 0)
-
-        self.export_stats_label.setText(f"Selected: {count} episodes ({format_size(total_bytes)})")
-
-    def filter_export_table(self, query: str):
-        query = query.strip().lower()
-        for r in range(self.export_table.rowCount()):
-            if not query:
-                self.export_table.setRowHidden(r, False)
-                continue
-            title = self.export_table.item(r, 2).text().lower() if self.export_table.item(r, 2) else ""
-            ep_str = self.export_table.item(r, 1).text().lower() if self.export_table.item(r, 1) else ""
-            artist = self.export_table.item(r, 3).text().lower() if self.export_table.item(r, 3) else ""
-            matched = (query in title) or (query in ep_str) or (query in artist)
-            self.export_table.setRowHidden(r, not matched)
-
-    def start_export_import(self):
-        if self.is_export_running:
-            return
-
-        selected_items = []
-        for r in range(self.export_table.rowCount()):
-            item = self.export_table.item(r, 0)
-            if item and item.checkState() == Qt.CheckState.Checked:
-                ep_data = item.data(Qt.ItemDataRole.UserRole)
-                if ep_data:
-                    selected_items.append(ep_data)
-
-        if not selected_items:
-            QMessageBox.warning(self, "No Episodes Selected", "Please check at least one episode to import.")
-            return
-
-        self.is_export_running = True
-        self.start_export_import_btn.setEnabled(False)
-        self.export_prog_bar.setRange(0, len(selected_items))
-        self.export_prog_bar.setValue(0)
-
-        copy_mode = self.exp_opt_copy.isChecked()
-        embed_tags = self.exp_opt_tags.isChecked()
-        build_cat = self.exp_opt_catalog.isChecked()
-
-        safe_chan = sanitize_filename(self.export_channel_name, max_length=50)
-        target_series_dir = self.cfg.output_dir / safe_chan
-
-        self.exp_signals = ExportSignals()
-        self.exp_signals.log.connect(self.log_export)
-        self.exp_signals.progress.connect(self.on_export_progress)
-        self.exp_signals.process_finished.connect(self.on_export_import_finished)
-
-        self.log_export(f"\n🚀 Starting import of {len(selected_items)} episodes into: {target_series_dir.name}/")
-
-        def worker():
-            import shutil
-            try:
-                for idx, ep in enumerate(selected_items, 1):
-                    title = ep["title"]
-                    ep_num = ep.get("episode_number")
-                    num_prefix = f"{ep_num:03d} - " if ep_num is not None else ""
-                    folder_name = sanitize_filename(f"{num_prefix}{title}", max_length=60)
-                    ep_dir = target_series_dir / "episodes" / folder_name
-                    ep_dir.mkdir(parents=True, exist_ok=True)
-
-                    self.exp_signals.progress.emit(idx - 1, len(selected_items), f"[{idx}/{len(selected_items)}] Importing: {title}...")
-                    self.exp_signals.log.emit(f"[{idx}/{len(selected_items)}] Processing: {title}...")
-
-                    # Audio file copy / move
-                    source_audio = Path(ep["source_audio"])
-                    ext = source_audio.suffix.lower() or ".mp3"
-                    dest_audio = ep_dir / f"audio{ext}"
-
-                    if not dest_audio.exists() or dest_audio.stat().st_size != ep["file_size"]:
-                        if copy_mode:
-                            shutil.copy2(source_audio, dest_audio)
-                        else:
-                            shutil.move(str(source_audio), str(dest_audio))
-
-                    # Cover file copy
-                    cover_dest = ep_dir / "cover.jpg"
-                    if ep.get("source_thumb") and Path(ep["source_thumb"]).exists() and not cover_dest.exists():
-                        shutil.copy2(ep["source_thumb"], cover_dest)
-                    elif not cover_dest.exists():
-                        exp_dir = source_audio.parent
-                        photos = list(exp_dir.glob("photos/*.jpg")) + list(exp_dir.glob("*.jpg"))
-                        if photos:
-                            shutil.copy2(photos[0], cover_dest)
-
-                    # Save metadata
-                    meta = EpisodeMetadata(
-                        message_id=ep.get("message_id", 0),
-                        channel_name=self.export_channel_name,
-                        channel_username=None,
-                        date=None,
-                        title=title,
-                        artist=ep.get("artist", self.export_channel_name),
-                        duration=ep.get("duration", 0),
-                        file_size=ep.get("file_size", 0),
-                        caption=ep.get("caption", ""),
-                        audio_filename=dest_audio.name,
-                        episode_number=ep_num
-                    )
-                    meta.series_title = self.export_channel_name
-                    meta.save_info(ep_dir, cover_filename="cover.jpg" if cover_dest.exists() else None)
-
-                    # ID3 Tagging
-                    if embed_tags:
-                        embed_audio_tags(dest_audio, meta, cover_dest if cover_dest.exists() else None)
-
-                    self.exp_signals.log.emit(f"  ✅ Saved to {ep_dir.name}")
-
-                if build_cat:
-                    build_channel_catalog(target_series_dir, channel_title=self.export_channel_name)
-                    self.exp_signals.log.emit("✨ Catalog & RSS feed updated.")
-
-                self.exp_signals.progress.emit(len(selected_items), len(selected_items), "Finished!")
-                self.exp_signals.process_finished.emit(True, f"Successfully imported {len(selected_items)} episodes to '{target_series_dir.name}'!")
-            except Exception as e:
-                self.exp_signals.process_finished.emit(False, str(e))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def on_export_progress(self, current: int, total: int, status_text: str):
-        self.export_prog_bar.setValue(current)
-        self.export_prog_label.setText(status_text)
-
-    def on_export_import_finished(self, success: bool, msg: str):
-        self.is_export_running = False
-        self.start_export_import_btn.setEnabled(True)
-        self.export_prog_bar.setValue(self.export_prog_bar.maximum())
-
-        if success:
-            self.log_export(f"🎉 {msg}")
-            QMessageBox.information(
-                self,
-                "Import Complete",
-                f"{msg}\n\n• Audio files organized & ID3 tagged\n• Catalog & RSS feed refreshed\n• Now visible in 'Podcast Library & Studio' tab!"
-            )
-            self.populate_export_table(self.scanned_export_episodes)
-            self.load_library_series_list()
-        else:
-            self.log_export(f"❌ Error during import: {msg}")
-            QMessageBox.critical(self, "Import Error", msg)
-
-    # =========================================================================
-    # TAB 3: Downloader (Scan, Series Picker, Checklist, Live Download)
+    # TAB 1: Downloader (Scan, Series Picker, Checklist, Live Download)
     # =========================================================================
     def init_downloader_tab(self):
         layout = QVBoxLayout(self.downloader_tab)
@@ -1490,25 +813,6 @@ class PodcastStudioGUI(QMainWindow):
 
         layout.addWidget(sett_box)
 
-        # Telegram API Settings Group
-        tg_sett_box = QGroupBox("Telegram API Credentials (my.telegram.org)")
-        tg_sett_l = QFormLayout(tg_sett_box)
-        tg_sett_l.setSpacing(10)
-
-        self.sett_api_id = QLineEdit(self.cfg.api_id)
-        self.sett_api_id.setPlaceholderText("Enter your App API ID from my.telegram.org")
-        tg_sett_l.addRow("Telegram API ID:", self.sett_api_id)
-
-        self.sett_api_hash = QLineEdit(self.cfg.api_hash)
-        self.sett_api_hash.setPlaceholderText("Enter your App API Hash from my.telegram.org")
-        tg_sett_l.addRow("Telegram API Hash:", self.sett_api_hash)
-
-        save_tg_btn = QPushButton("💾 Save Telegram API Credentials")
-        save_tg_btn.clicked.connect(self.save_settings_api_credentials)
-        tg_sett_l.addRow("", save_tg_btn)
-
-        layout.addWidget(tg_sett_box)
-
         btn_box = QHBoxLayout()
         sync_git_btn = QPushButton("🚀 Commit & Push Entire Archive to GitHub")
         sync_git_btn.setObjectName("gitBtn")
@@ -1530,19 +834,6 @@ class PodcastStudioGUI(QMainWindow):
 
         layout.addStretch()
 
-    def save_settings_api_credentials(self):
-        aid = self.sett_api_id.text().strip()
-        ahash = self.sett_api_hash.text().strip()
-        if not aid or not ahash:
-            QMessageBox.warning(self, "Input Required", "Please enter both API ID and API Hash.")
-            return
-
-        self.cfg.update(TG_API_ID=aid, TG_API_HASH=ahash)
-        self.bridge.reload_downloader()
-        self.downloader = self.bridge.downloader
-        self.check_auth_status_async()
-        QMessageBox.information(self, "Saved", "Telegram API credentials updated successfully!")
-
     # =========================================================================
     # Downloader Logic (Scanning Channel & Populating Table)
     # =========================================================================
@@ -1551,15 +842,6 @@ class PodcastStudioGUI(QMainWindow):
         self.dl_log_text.verticalScrollBar().setValue(self.dl_log_text.verticalScrollBar().maximum())
 
     def start_channel_scan(self):
-        if not self.cfg.is_configured():
-            QMessageBox.warning(
-                self,
-                "API Credentials Needed",
-                "To use the Direct Telegram Downloader, please click '🔑 Telegram Account' and enter your own API ID and Hash from my.telegram.org.\n\n"
-                "💡 TIP: You can also use the '📂 Telegram Desktop Export' tab to import and organize podcasts without any API keys or logins!"
-            )
-            return
-
         target = self.dl_channel_input.text().strip() or self.cfg.target_channel
         self.cfg.update(TARGET_CHANNEL=target)
         self.downloader.config.target_channel = target
@@ -1575,6 +857,13 @@ class PodcastStudioGUI(QMainWindow):
         def worker():
             try:
                 self.bridge.ensure_connected()
+                authorized = self.bridge.run_coro(self.downloader.client.is_user_authorized())
+                if not authorized:
+                    self.dl_signals.log.emit("🔑 Telegram login required. Please scan the QR code to connect.")
+                    QTimer.singleShot(0, self.open_login_dialog)
+                    self.dl_signals.scan_finished.emit([], {}, "")
+                    return
+
                 self.bridge.run_coro(self.downloader.resolve_channel(target))
                 podcasts = self.bridge.run_coro(self.downloader.scan_podcasts())
 

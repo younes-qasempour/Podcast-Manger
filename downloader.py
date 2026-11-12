@@ -59,31 +59,26 @@ class PodcastDownloader:
         self.channel_title = ""
         self.channel_username = ""
 
-        if self.config.is_configured():
-            try:
-                api_id_int = int(self.config.api_id)
-            except ValueError:
-                api_id_int = 0
+        try:
+            api_id_int = int(self.config.api_id)
+        except ValueError:
+            api_id_int = 6
 
-            self.client = TelegramClient(
-                str(self.config.session_path),
-                api_id_int,
-                self.config.api_hash,
-                proxy=proxy,
-                device_model="PC 64bit",
-                system_version="Windows 11",
-                app_version="1.0.0",
-                lang_code="en",
-                system_lang_code="en",
-                loop=loop
-            )
-        else:
-            self.client = None
+        self.client = TelegramClient(
+            str(self.config.session_path),
+            api_id_int,
+            self.config.api_hash,
+            proxy=proxy,
+            device_model="Samsung SM-G998B",
+            system_version="SDK 33",
+            app_version="10.8.1",
+            lang_code="en",
+            system_lang_code="en",
+            loop=loop
+        )
 
     async def connect(self):
         """Connects and authorizes with Telegram via QR Code or Phone."""
-        if not self.client:
-            raise ValueError("Telegram API credentials (API ID & Hash) are not configured. Please configure them in Settings or use Telegram Desktop Export mode.")
         try:
             if not self.client.is_connected():
                 await self.client.connect()
